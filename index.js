@@ -74,7 +74,7 @@ async function scrapeJustOneCookBook({
 
             const prevRecipeInfo = await accumulator;
 
-            const parsedRecipeInfo = await parseRecipe(url, instance)
+            const parsedRecipeInfo = await parseWordPressRecipe(url, instance)
 
             const updateObj = { title: 'JustOneCookbook' }
 
@@ -156,9 +156,9 @@ async function scrapePressureCookRecipes({
 
             const prevRecipeInfo = await accumulator;
 
-            const parsedRecipeInfo = await parseRecipe(url, instance)
+            const parsedRecipeInfo = await parseWordPressRecipe(url, instance)
 
-            const updateObj = { title: 'JustOneCookbook' }
+            const updateObj = { title: 'Amy & Jacky | Pressure Cook Recipes' }
 
             if (!parsedRecipeInfo) progressBar.setTotal(--totalNumRecipes)
 
@@ -224,7 +224,7 @@ async function scrapeNoRecipes({
 
             const prevRecipeInfo = await accumulator;
 
-            const parsedRecipeInfo = await parseRecipe(url, instance)
+            const parsedRecipeInfo = await parseWordPressRecipe(url, instance)
 
             const updateObj = { title: 'NoRecipe' }
 
@@ -304,7 +304,7 @@ async function scrapeWoksOfLife({
 
             const prevRecipeInfo = await accumulator;
 
-            const parsedRecipeInfo = await parseRecipe(url, instance)
+            const parsedRecipeInfo = await parseWordPressRecipe(url, instance)
 
             const updateObj = { title: 'The Woks of Life' }
 
@@ -326,7 +326,7 @@ async function scrapeWoksOfLife({
 // https://norecipes.com/
 // https://www.justonecookbook.com/
 // https://thewoksoflife.com/recipe-list/
-async function parseRecipe(url, instance) {
+async function parseWordPressRecipe(url, instance) {
     await instance.goto(url)
 
     let currentHeight = 0;
@@ -481,28 +481,43 @@ const writeAndCleanup = (recipes, prefix, instance) => {
 
 Promise.all([
     scrapeNoRecipes({
-        maxCount: 5,
+        maxCount: 100,
         multibar
     }).then(
         ({ data, instance }) => writeAndCleanup(data, "norecipes_index", instance)
     ),
     scrapeJustOneCookBook({
-        maxCount: 5,
+        maxCount: 100,
         multibar
     }).then(
         ({ data, instance }) => writeAndCleanup(data, "just_one_cookbook_index", instance)
     ),
     scrapeWoksOfLife({
-        maxCount: 5,
+        maxCount: 100,
         multibar
     }).then(
         ({ data, instance }) => writeAndCleanup(data, "woks_of_life_index", instance)
     ),
     scrapePressureCookRecipes({
-        maxCount: 5,
+        maxCount: 100,
         multibar
     }).then(
         ({ data, instance }) => writeAndCleanup(data, "pressure_cook_recipes_index", instance)
     )
 
 ]).then(() => multibar.stop())
+
+// WP
+// https://www.chinasichuanfood.com/?s=
+// https://www.kawalingpinoy.com/category/recipe-index/
+
+// ERS
+// https://shesimmers.com/?s=
+// http://www.itsmydish.com/?s=
+
+// ZL
+// https://www.japanesecooking101.com/?s=
+// https://ladyandpups.com/?s=
+
+// WPURP
+// https://hispanickitchen.com/?s=
