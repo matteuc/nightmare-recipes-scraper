@@ -10,9 +10,13 @@ const WP_TYPE = "WP"
 
 const ZL_TYPE = "ZL"
 
+const ERS_TYPE = "ERS"
+
+
 const RECIPE_TYPES = [
     WP_TYPE,
-    ZL_TYPE
+    ZL_TYPE,
+    ERS_TYPE
 ]
 
 const multibar = new cliProgress.MultiBar({
@@ -20,318 +24,6 @@ const multibar = new cliProgress.MultiBar({
     hideCursor: true
 
 }, cliProgress.Presets.shades_grey);
-
-async function scrapeJustOneCookBook({
-    maxCount = 5,
-    multibar
-} = {}) {
-    /*
-        INSTANCES START
-    */
-    const instance = Nightmare({
-        openDevTools: true,
-        show: true
-    })
-
-    /*
-        INSTANCES END
-    */
-    const recipePages = []
-
-    const maxPageNumber = await instance
-        .goto('https://www.justonecookbook.com/recipes')
-        .evaluate(() => {
-            const matches = document.querySelectorAll('a.page-numbers:not(.next)')
-
-            const pageButtons = Object.keys(matches).map(k => matches[k].text)
-
-            return parseInt(pageButtons.pop())
-        })
-
-    for (let i = 1; i <= maxPageNumber; i++) {
-        recipePages.push(`https://www.justonecookbook.com/recipes${i !== 1 ? `/page/${i}` : ''}`)
-    }
-
-    const allRecipeLinks = await recipePages
-        .reduce(async (accumulator, url) => {
-
-
-            const prevRecipeLinks = await accumulator;
-
-            if (prevRecipeLinks.length >= maxCount) return prevRecipeLinks
-
-            const parsedRecipeLinks = await instance.goto(url)
-                .evaluate(() => {
-                    const matches = document.querySelectorAll('.grid.thumb a[rel="bookmark"]')
-
-                    return Object.keys(matches).map(k => matches[k].href)
-
-                })
-
-            return prevRecipeLinks.concat(parsedRecipeLinks)
-
-        }, Promise.resolve([]))
-
-    const recipesToParse = allRecipeLinks.slice(0, maxCount)
-
-    let totalNumRecipes = recipesToParse.length
-
-    const progressBar = multibar ? multibar.create(totalNumRecipes, 0) : (new cliProgress.SingleBar({}, cliProgress.Presets.shades_classic)).start(recipesToParse.length, 0);
-
-    const allRecipeInfo = await recipesToParse
-        .reduce(async (accumulator, url) => {
-
-            const prevRecipeInfo = await accumulator;
-
-            const parsedRecipeInfo = await parseWordPressRecipe(url, instance)
-
-            const updateObj = { title: 'JustOneCookbook' }
-
-            if (!parsedRecipeInfo) progressBar.setTotal(--totalNumRecipes)
-
-            progressBar.update(prevRecipeInfo.length + 1, updateObj);
-            return prevRecipeInfo.concat(parsedRecipeInfo ? [parsedRecipeInfo] : [])
-
-        }, Promise.resolve([]))
-
-    progressBar.stop()
-
-    return { data: allRecipeInfo, instance }
-
-    // https://stackoverflow.com/questions/40832949/how-to-end-instancejs-instance-after-chaining-promises
-}
-
-async function scrapePressureCookRecipes({
-    maxCount = 5,
-    multibar
-} = {}) {
-    /*
-        INSTANCES START
-    */
-    const instance = Nightmare({
-        openDevTools: true,
-        show: true
-    })
-
-    /*
-        INSTANCES END
-    */
-    const recipePages = []
-
-    const domain = 'https://www.pressurecookrecipes.com/instant-pot-recipes/'
-
-    const maxPageNumber = await instance
-        .goto(domain)
-        .evaluate(() => {
-            const matches = document.querySelectorAll('a.page-numbers:not(.next)')
-
-            const pageButtons = Object.keys(matches).map(k => matches[k].text)
-
-            return parseInt(pageButtons.pop())
-        })
-
-    for (let i = 1; i <= maxPageNumber; i++) {
-        recipePages.push(`${domain}${i !== 1 ? `/page/${i}` : ''}`)
-    }
-
-    const allRecipeLinks = await recipePages
-        .reduce(async (accumulator, url) => {
-
-
-            const prevRecipeLinks = await accumulator;
-
-            if (prevRecipeLinks.length >= maxCount) return prevRecipeLinks
-
-            const parsedRecipeLinks = await instance.goto(url)
-                .evaluate(() => {
-                    const matches = document.querySelectorAll('a.mask-img')
-
-                    return Object.keys(matches).map(k => matches[k].href)
-
-                })
-
-            return prevRecipeLinks.concat(parsedRecipeLinks)
-
-        }, Promise.resolve([]))
-
-    const recipesToParse = allRecipeLinks.slice(0, maxCount)
-
-    let totalNumRecipes = recipesToParse.length
-
-    const progressBar = multibar ? multibar.create(totalNumRecipes, 0) : (new cliProgress.SingleBar({}, cliProgress.Presets.shades_classic)).start(recipesToParse.length, 0);
-
-    const allRecipeInfo = await recipesToParse
-        .reduce(async (accumulator, url) => {
-
-            const prevRecipeInfo = await accumulator;
-
-            const parsedRecipeInfo = await parseWordPressRecipe(url, instance)
-
-            const updateObj = { title: 'Amy & Jacky | Pressure Cook Recipes' }
-
-            if (!parsedRecipeInfo) progressBar.setTotal(--totalNumRecipes)
-
-            progressBar.update(prevRecipeInfo.length + 1, updateObj);
-            return prevRecipeInfo.concat(parsedRecipeInfo ? [parsedRecipeInfo] : [])
-
-        }, Promise.resolve([]))
-
-    progressBar.stop()
-
-    return { data: allRecipeInfo, instance }
-
-    // https://stackoverflow.com/questions/40832949/how-to-end-instancejs-instance-after-chaining-promises
-}
-
-async function scrapeNoRecipes({
-    maxCount = 5,
-    multibar
-} = {}) {
-    /*
-       INSTANCES START
-   */
-    const instance = Nightmare({
-        openDevTools: true,
-        show: true
-    })
-
-    /*
-           INSTANCES END
-       */
-    const allRecipeLinks = await instance
-        .goto('https://norecipes.com/recipes/')
-        .evaluate((maxCount) => {
-            const recipePages = []
-
-            while (recipePages.length <= maxCount) {
-                document.querySelector("a.load-more-btn").click();
-
-                recipePages.push(
-                    ...(() => {
-
-                        const matches = document.querySelectorAll("a.recipe-link")
-
-                        return Object.keys(matches)
-                            .map(k => matches[k].href || '')
-
-                    })()
-                );
-            }
-
-            return recipePages
-        }, maxCount)
-        .then(r => r)
-
-    const recipesToParse = allRecipeLinks.slice(0, maxCount)
-
-    let totalNumRecipes = recipesToParse.length
-
-    const progressBar = multibar ? multibar.create(totalNumRecipes, 0) : (new cliProgress.SingleBar({}, cliProgress.Presets.shades_classic)).start(recipesToParse.length, 0);
-
-    const allRecipeInfo = await recipesToParse
-        .reduce(async (accumulator, url) => {
-
-            const prevRecipeInfo = await accumulator;
-
-            const parsedRecipeInfo = await parseWordPressRecipe(url, instance)
-
-            const updateObj = { title: 'NoRecipe' }
-
-            if (!parsedRecipeInfo) progressBar.setTotal(--totalNumRecipes)
-
-            progressBar.update(prevRecipeInfo.length + 1, updateObj);
-
-            return prevRecipeInfo.concat(parsedRecipeInfo ? [parsedRecipeInfo] : [])
-
-        }, Promise.resolve([]))
-
-    progressBar.stop()
-
-    return { data: allRecipeInfo, instance }
-
-}
-
-async function scrapeWoksOfLife({
-    maxCount = 5,
-    multibar
-} = {}) {
-    /*
-        INSTANCES START
-    */
-    const instance = Nightmare({
-        openDevTools: true,
-        show: true
-    })
-
-    /*
-        INSTANCES END
-    */
-    const recipePages = []
-
-    const domain = "https://thewoksoflife.com/recipe-list/"
-
-    const categoryPages = await instance
-        .goto(domain)
-        .evaluate(() => {
-            const matches = document.querySelectorAll('a.seemore')
-
-            const categoryLinks = Object.keys(matches).map(k => matches[k].href)
-
-            return categoryLinks
-        })
-
-    recipePages.push(...categoryPages)
-
-    const allRecipeLinks = await recipePages
-        .reduce(async (accumulator, url) => {
-
-
-            const prevRecipeLinks = await accumulator;
-
-            if (prevRecipeLinks.length >= maxCount) return prevRecipeLinks
-
-            const parsedRecipeLinks = await instance.goto(url)
-                .evaluate(() => {
-                    const matches = document.querySelectorAll('li.kd-ind-list a')
-
-                    return Object.keys(matches).map(k => matches[k].href)
-
-                })
-
-
-            return prevRecipeLinks.concat(parsedRecipeLinks)
-
-        }, Promise.resolve([]))
-
-
-    const recipesToParse = allRecipeLinks.slice(0, maxCount)
-
-    let totalNumRecipes = recipesToParse.length
-
-    const progressBar = multibar ? multibar.create(totalNumRecipes, 0) : (new cliProgress.SingleBar({}, cliProgress.Presets.shades_classic)).start(recipesToParse.length, 0);
-
-    const allRecipeInfo = await recipesToParse
-        .reduce(async (accumulator, url) => {
-
-            const prevRecipeInfo = await accumulator;
-
-            const parsedRecipeInfo = await parseWordPressRecipe(url, instance)
-
-            const updateObj = { title: 'The Woks of Life' }
-
-            if (!parsedRecipeInfo) progressBar.setTotal(--totalNumRecipes)
-
-            progressBar.update(prevRecipeInfo.length + 1, updateObj);
-            return prevRecipeInfo.concat(parsedRecipeInfo ? [parsedRecipeInfo] : [])
-
-        }, Promise.resolve([]))
-
-    progressBar.stop()
-
-    return { data: allRecipeInfo, instance }
-
-    // https://stackoverflow.com/questions/40832949/how-to-end-instancejs-instance-after-chaining-promises
-}
 
 async function scrapeRecipeWebsite({
     maxCount = 1,
@@ -491,14 +183,18 @@ async function scrapeRecipeWebsite({
             // Determine type of recipe structure
 
             const recipeType = await instance.goto(url)
-                .evaluate((WP_TYPE, ZL_TYPE) => {
+                .evaluate((WP_TYPE, ZL_TYPE, ERS_TYPE) => {
                     const wpRecipeName = (document.querySelector('[class*="wprm-recipe-name"]') || {}).innerText
 
                     const zlRecipeName = (document.querySelector('[id*="zlrecipe-title"]') || {}).innerText
 
+                    const ersRecipeName = (document.querySelector('[class*="ERSName"]') || {}).innerText
+
                     if (wpRecipeName) return WP_TYPE
 
                     if (zlRecipeName) return ZL_TYPE
+
+                    if (ersRecipeName) return ERS_TYPE
 
                     return null
 
@@ -513,6 +209,9 @@ async function scrapeRecipeWebsite({
                     break
                 case ZL_TYPE:
                     parseRecipe = parseZLRecipe
+                    break
+                case ERS_TYPE:
+                    parseRecipe = parseERSRecipe
                     break
                 default:
                     parseRecipe = () => null
@@ -626,7 +325,7 @@ async function parseWordPressRecipe(instance) {
                 const recipeImages = Object.values(
                     document.querySelectorAll('[class*="wp-image"]') || {})
                     .filter(i => {
-                        return (extractImage(i).src || "").includes("https")
+                        return (extractImage(i).src || "").includes("http")
                     }
                     )
                     .map(i => extractImage(i))
@@ -789,7 +488,7 @@ async function parseZLRecipe(instance) {
                 const recipeImages = Object.values(
                     document.querySelectorAll('[class*="wp-image"]') || {})
                     .filter(i => {
-                        return (extractImage(i).src || "").includes("https")
+                        return (extractImage(i).src || "").includes("http")
                     }
                     )
                     .map(i => extractImage(i))
@@ -879,6 +578,190 @@ async function parseZLRecipe(instance) {
             return r
         })
 }
+// TESTED FOR
+// http://www.itsmydish.com/?s=
+async function parseERSRecipe(instance) {
+
+    let currentHeight = 0;
+
+    /*
+        SCROLL THROUGH START
+    */
+    const totalHeight = await instance.evaluate(function () {
+        return document.body.scrollHeight;
+    });
+
+    const waitStep = 100
+
+    while (totalHeight >= currentHeight) {
+        currentHeight += totalHeight * 0.1;
+
+        await instance.scrollTo(currentHeight, 0)
+            .wait(waitStep);
+    }
+    /*
+        SCROLL THROUGH END
+    */
+
+    return instance
+        .evaluate(
+            () => {
+                /* 
+                    FUNCTIONS START
+                */
+                const parseNumber = s => !isNaN(s) ? parseFloat(s) : ([n, d] = s.split(/\D/), d) ? (n || 1) / d : '131111121234151357'[i = s.charCodeAt() % 63 % 20] / -~'133689224444557777'[i]
+
+                const normalizeStr = (s = '') => s.trim().toLowerCase()
+
+                const extractImage = i => ({
+                    src: i.getAttribute("nitro-lazy-src") || i.getAttribute('src')
+                        || '',
+                    alt: i.getAttribute('alt')
+                })
+
+                /*
+                    FUNCTIONS END
+                */
+
+                const recipeName = (document.querySelector('[class*="ERSName"]') || {}).innerText
+
+                // If a recipe name not found, return
+                if (!recipeName) return null
+
+                const recipeSummary = (document.querySelector('[class*="ERSSummary"]') || {}).innerText || ''
+
+                const recipeCourse = (document.querySelector('[itemprop="recipeCategory"]') || {}).innerText
+
+                const recipeCuisine = (document.querySelector('[itemprop="recipeCuisine"]') || {}).innerText
+
+                /*
+                PARSE RECIPE TIME START
+                */
+                const recipePrepTimeISOContainer = document.querySelector('[itemprop="prepTime"]')
+
+                const recipePrepTime = recipePrepTimeISOContainer ? recipePrepTimeISOContainer.getAttribute('datetime') : null
+
+                const recipeCookTimeISOContainer = document.querySelector('[itemprop="cookTime"]')
+
+                const recipeCookTime = recipeCookTimeISOContainer ? recipeCookTimeISOContainer.getAttribute('datetime') : null
+
+                /*
+                PARSE RECIPE TIME END
+                */
+
+                const recipeServings = (document.querySelector('[itemprop="recipeYield"]') || {}).innerText
+
+                let recipeServingSize
+
+                if (recipeServings) {
+                    let tmp = recipeServings.split(" ")[1]
+
+                    if (!tmp) return
+
+                    tmp = tmp.trim()
+
+                    recipeServingSize = tmp.split(" ")[0]
+
+                }
+
+                const recipeImages = Object.values({
+                    ...(document.querySelectorAll('[class*="wp-image"]') || {}),
+                    ...(document.querySelectorAll('a[rel="lightbox"] img') || {})
+                }
+                )
+                    .filter(i => {
+                        return (extractImage(i).src || "").includes("http")
+                    }
+                    )
+                    .map(i => extractImage(i))
+
+                console.log(recipeImages)
+
+                const recipeIngredients = Object.values(
+                    document.querySelectorAll('.ERSIngredients li.ingredient') || {})
+                    .map(ri => {
+
+                        // WIP : No separation of quantity, unit, and name
+                        const name = normalizeStr(ri.innerText)
+
+                        return {
+                            name
+                        }
+
+                    })
+
+
+                const recipeInstructions = Object.values(
+                    document.querySelectorAll('.ERSInstructions li.instruction') || {})
+                    .map((ri, idx) => {
+                        const description = ri.innerText
+
+                        return {
+                            step: idx + 1,
+                            description,
+                            images: []
+                        }
+
+                    })
+
+                return {
+                    link: document.URL,
+                    name: recipeName,
+                    summary: recipeSummary,
+                    course: recipeCourse,
+                    cuisine: recipeCuisine,
+                    timing: {
+                        prep: recipePrepTime,
+                        cook: recipeCookTime,
+                    },
+                    ingredients: recipeIngredients,
+                    instructions: recipeInstructions,
+                    images: recipeImages,
+                    servings: parseInt(recipeServingSize)
+                }
+            })
+        .then(r => {
+
+
+            if (r) {
+                const {
+                    timing: {
+                        prep: recipePrepTimeISO,
+                        cook: recipeCookTimeISO
+                    }
+                } = r
+
+                const unit = "mins"
+
+
+                const recipeCookTime = recipeCookTimeISO ? moment.duration(recipeCookTimeISO).asMinutes() : null
+
+                const recipePrepTime = recipePrepTimeISO ? moment.duration(recipePrepTimeISO).asMinutes() : null
+
+                const recipeTotalTime = (recipePrepTime || recipeCookTime) ? (recipePrepTime || 0) + (recipeCookTime || 0) : null
+
+                return {
+                    ...r,
+                    timing: (recipePrepTime || recipeCookTime || recipeTotalTime) ? {
+                        prep: recipePrepTime ? {
+                            value: recipePrepTime,
+                            unit
+                        } : {},
+                        cook: recipeCookTime ? {
+                            value: recipeCookTime,
+                            unit
+                        } : {},
+                        total: recipeTotalTime ? {
+                            value: recipeTotalTime,
+                            unit
+                        } : {},
+                    } : null,
+                }
+            }
+
+            return r
+        })
+}
 
 const writeRecipes = (recipes, prefix) => {
     fs.writeFileSync(`${OUTPUT_PATH}/${prefix}.json`, JSON.stringify(recipes))
@@ -886,17 +769,17 @@ const writeRecipes = (recipes, prefix) => {
 
 Promise.all([
     scrapeRecipeWebsite({
-        recipeLinkSelector: '.post_image a',
-        seeMoreRecipesSelector: 'li.next a',
-        url: 'https://ladyandpups.com/?s=',
-        maxCount: 20,
+        recipeLinkSelector: '.title a',
+        seeMoreRecipesSelector: '.nav-entries a',
+        url: 'https://shesimmers.com/?s=',
+        maxCount: 15,
         multibar,
         show: true,
         devTools: true,
-        name: "Lady and Pups"
+        name: "She Simmers"
     }).then(
         ({ data, instance }) => {
-            writeRecipes(data, "ladypups_index")
+            writeRecipes(data, "she_simmers_index")
 
             return instance.end()
         }
