@@ -392,7 +392,13 @@ async function scrapeRecipeWebsite({
 
             const remaining = maxCount - prevRecipeLinks.length
 
-            const parsedRecipeLinks = await instance.goto(url)
+            const parsedRecipeLinks = []
+                
+            let currentUrl = url;
+
+            while (parsedRecipeLinks.length <= remaining) {
+                
+                const { data, next } = await instance.goto(currentUrl)
                 .evaluate(async (remaining, recipeLinkSelector, seeMoreRecipesSelector) => {
 
                     const findRecipeLinks = () => {
@@ -410,16 +416,28 @@ async function scrapeRecipeWebsite({
                         ...findRecipeLinks()
                     );
 
-                    console.log("SEARCHING", remaining)
                     while (seeMoreRecipesSelector && recipePages.length <= remaining) {
                         const seeMoreButton = document.querySelector(seeMoreRecipesSelector)
 
-                        // TODO - Not working, travels to new page; script no longer running
                         if (seeMoreButton) {
-                            seeMoreButton.click()
-                            await new Promise(resolve => setTimeout(resolve, 3000))
-                        }
+                            const nextPageLink = seeMoreButton.getAttribute('href')
                             
+                            // If the see more button does not travel to a new page, click to load more recipes
+                            if (
+                                !nextPageLink ||
+                                !nextPageLink.includes('http') 
+                            ) seeMoreButton.click()
+
+                            // Otherwise, handle traveling to the new page
+                            else if (nextPageLink.includes('http')) {
+                                return {
+                                    data: recipePages,
+                                    next: nextPageLink
+                                }
+                            }
+
+                        }
+                        
                         else break
 
                         recipePages.push(
@@ -428,15 +446,23 @@ async function scrapeRecipeWebsite({
 
                     }
 
-                    return recipePages
+                    return {data: recipePages, next: null}
 
                 }, remaining, recipeLinkSelector, seeMoreRecipesSelector)
+
+                parsedRecipeLinks.push(...data)
+
+                if (next) currentUrl = next
+                else break;
+                
+               
+            }
+
 
 
             return prevRecipeLinks.concat(parsedRecipeLinks)
 
         }, Promise.resolve([]))
-
 
     // REDUCE NUMBER OF RECIPES TO PARSE
     const recipesToParse = allRecipeLinks.slice(0, maxCount)
@@ -445,7 +471,6 @@ async function scrapeRecipeWebsite({
 
     // SET UP PROGRESS BAR FOR CLI USERS
     const progressBar = multibar ? multibar.create(totalNumRecipes, 0) : (new cliProgress.SingleBar({}, cliProgress.Presets.shades_classic));
-
 
     progressBar.start(totalNumRecipes, 0)
 
@@ -483,16 +508,24 @@ async function parseWordPressRecipe(url, instance) {
 
     let currentHeight = 0;
 
+    /*
+        SCROLL THROUGH START
+    */
     const totalHeight = await instance.evaluate(function () {
         return document.body.scrollHeight;
     });
+
+    const waitStep = 100
 
     while (totalHeight >= currentHeight) {
         currentHeight += totalHeight * 0.1;
 
         await instance.scrollTo(currentHeight, 0)
-            .wait(100);
+            .wait(waitStep);
     }
+    /*
+        SCROLL THROUGH END
+    */
 
     return instance
         .evaluate(
@@ -509,7 +542,8 @@ async function parseWordPressRecipe(url, instance) {
                         || '',
                     alt: i.getAttribute('alt')
                 })
-                /* 
+
+                /*
                     FUNCTIONS END
                 */
 
@@ -520,9 +554,9 @@ async function parseWordPressRecipe(url, instance) {
 
                 const recipeSummary = (document.querySelector('[class*="recipe-summary"]') || {}).innerText || ''
 
-                const recipeCourse = normalizeStr((document.querySelector('[class*="recipe-course-container"] [class*="recipe-course"]:not([class*="recipe-course-label"]):not([class*="recipe-icon"])') || {}).innerText)
+                const recipeCourse = normalizeStr((document.querySelector('[class*="recipe-course-container"] [class*="recipe-course"]:not([class*="recipe-course-label"]):not([class*="recipe-icon"]):not([class*="recipe-course-name"])') || {}).innerText)
 
-                const recipeCuisine = normalizeStr((document.querySelector('[class*="recipe-cuisine-container"] [class*="recipe-cuisine"]:not([class*="recipe-cuisine-label"]):not([class*="recipe-icon"])') || {}).innerText)
+                const recipeCuisine = normalizeStr((document.querySelector('[class*="recipe-cuisine-container"] [class*="recipe-cuisine"]:not([class*="recipe-cuisine-label"]):not([class*="recipe-icon"]):not([class*="recipe-cuisine-name"])') || {}).innerText)
 
                 const recipePrepTime = (document.querySelector('[class*="prep_time"]') || {}).innerText
 
@@ -560,7 +594,163 @@ async function parseWordPressRecipe(url, instance) {
                     .map(i => extractImage(i))
 
                 const recipeIngredients = Object.values(
-                    document.querySelectorAll('[class$="recipe-ingredient"]') || {})
+                    document.querySelectorAll('li[class*="recipe-ingredient"]') || {})
+                    .map(ri => {
+                        const amount = parseNumber(
+                            (ri.querySelector('[class*=recipe-ingredient-amount]') || {}).innerText || ''
+                        )
+
+                        const unit = (ri.querySelector('[class*=recipe-ingredient-unit]') || {}).innerText
+
+                        const name = normalizeStr(((ri.querySelector('[class*=recipe-ingredient-name]') || {}).innerText || '').replace(/\([^)]*\)/g, ''))
+
+                        return {
+                            amount,
+                            unit,
+                            name
+                        }
+
+                    })
+
+
+                const recipeInstructions = Object.values(
+                    document.querySelectorAll('[class$="recipe-instruction"]') || {})
+                    .map((ri, idx) => {
+                        const description = (ri.querySelector('[class*=recipe-instruction-text]') || {}).innerText
+
+                        const images = Object.values(
+                            ri.querySelectorAll('[class*=recipe-instruction-image] img') || {}
+                        )
+                            .map(i => extractImage(i))
+
+                        return {
+                            step: idx + 1,
+                            description,
+                            images
+                        }
+
+                    })
+
+                return {
+                    link: document.URL,
+                    name: recipeName,
+                    summary: recipeSummary,
+                    course: recipeCourse,
+                    cuisine: recipeCuisine,
+                    timing: {
+                        prep: {
+                            value: parseInt(recipePrepTime),
+                            unit: recipePrepTimeUnit
+                        },
+                        cook: {
+                            value: parseInt(recipeCookTime),
+                            unit: recipeCookTimeUnit
+                        },
+                        total: {
+                            value: parseInt(recipeTotalTime),
+                            unit: recipeTotalTimeUnit
+                        },
+                    },
+                    ingredients: recipeIngredients,
+                    instructions: recipeInstructions,
+                    images: recipeImages,
+                    servings: parseInt(recipeServingSize)
+                }
+            })
+}
+
+async function parseWordPressRecipe(url, instance) {
+    await instance.goto(url)
+
+    let currentHeight = 0;
+
+    /*
+        SCROLL THROUGH START
+    */
+    const totalHeight = await instance.evaluate(function () {
+        return document.body.scrollHeight;
+    });
+
+    const waitStep = 100
+
+    while (totalHeight >= currentHeight) {
+        currentHeight += totalHeight * 0.1;
+
+        await instance.scrollTo(currentHeight, 0)
+            .wait(waitStep);
+    }
+    /*
+        SCROLL THROUGH END
+    */
+
+    return instance
+        .evaluate(
+            () => {
+                /* 
+                    FUNCTIONS START
+                */
+                const parseNumber = s => !isNaN(s) ? parseFloat(s) : ([n, d] = s.split(/\D/), d) ? (n || 1) / d : '131111121234151357'[i = s.charCodeAt() % 63 % 20] / -~'133689224444557777'[i]
+
+                const normalizeStr = (s = '') => s.trim().toLowerCase()
+
+                const extractImage = i => ({
+                    src: i.getAttribute("nitro-lazy-src") || i.getAttribute('src')
+                        || '',
+                    alt: i.getAttribute('alt')
+                })
+
+                /*
+                    FUNCTIONS END
+                */
+
+                const recipeName = (document.querySelector('[class*="recipe-name"]') || {}).innerText
+
+                // If a recipe name not found, return
+                if (!recipeName) return null
+
+                const recipeSummary = (document.querySelector('[class*="recipe-summary"]') || {}).innerText || ''
+
+                const recipeCourse = normalizeStr((document.querySelector('[class*="recipe-course-container"] [class*="recipe-course"]:not([class*="recipe-course-label"]):not([class*="recipe-icon"]):not([class*="recipe-course-name"])') || {}).innerText)
+
+                const recipeCuisine = normalizeStr((document.querySelector('[class*="recipe-cuisine-container"] [class*="recipe-cuisine"]:not([class*="recipe-cuisine-label"]):not([class*="recipe-icon"]):not([class*="recipe-cuisine-name"])') || {}).innerText)
+
+                const recipePrepTime = (document.querySelector('[class*="prep_time"]') || {}).innerText
+
+                const recipePrepTimeUnit = (document.querySelector('[class*="prep_time-unit"]') || {}).innerText
+
+                const recipeCookTime = (document.querySelector('[class*="cook_time"]') || {}).innerText
+
+                const recipeCookTimeUnit = (document.querySelector('[class*="cook_time-unit"]') || {}).innerText
+
+                const recipeTotalTime = (document.querySelector('[class*="total_time"]') || {}).innerText
+
+                const recipeTotalTimeUnit = (document.querySelector('[class*="total_time-unit"]') || {}).innerText
+
+                const recipeServings = (document.querySelector('[class*="recipe-servings-container"]') || {}).innerText
+
+                let recipeServingSize
+
+                if (recipeServings) {
+                    let tmp = recipeServings.split(":")[1]
+
+                    if (!tmp) return
+
+                    tmp = tmp.trim()
+
+                    recipeServingSize = tmp.split(" ")[0]
+
+                }
+
+                const recipeImages = Object.values(
+                    document.querySelectorAll('[class*="wp-image"]') || {})
+                    .filter(i => {
+                        return (extractImage(i).src || "").includes("https")
+                    }
+                    )
+                    .map(i => extractImage(i))
+
+                const recipeIngredients = Object.values(
+                    document.querySelectorAll('li[class*="recipe-ingredient"]') || {})
                     .map(ri => {
                         const amount = parseNumber(
                             (ri.querySelector('[class*=recipe-ingredient-amount]') || {}).innerText || ''
@@ -631,27 +821,23 @@ const writeRecipes = (recipes, prefix) => {
 
 Promise.all([
     scrapeRecipeWebsite({
-        recipeLinkSelector: 'a.entry-image-link',
-        seeMoreRecipesSelector: 'li.pagination-next a',
-        url: 'https://www.kawalingpinoy.com/blog/',
-        maxCount: 100,
+        recipeLinkSelector: 'a.recipe-link',
+        seeMoreRecipesSelector: 'a.load-more-btn',
+        url: 'https://norecipes.com/cuisine/best/',
+        maxCount: 20,
         multibar,
         show: true,
         devTools: true,
-        name: "Kawaling Pinoy"
+        name: "NoRecipes"
     }).then(
         ({ data, instance }) => {
-            writeRecipes(data, "kp_index")
+            writeRecipes(data, "nr_index")
 
             return instance.end()
         }
     )
 
 ]).then(() => multibar.stop())
-
-// WP
-// https://www.chinasichuanfood.com/?s=
-// https://www.kawalingpinoy.com/category/recipe-index/
 
 // ERS
 // https://shesimmers.com/?s=
@@ -663,17 +849,3 @@ Promise.all([
 
 // WPURP
 // https://hispanickitchen.com/?s=
-
-
-
-// UNIVERSAL SCRAPER
-
-// maxCount: number
-
-// scrapeCategories : boolean
-// categorySelector: string
-// seeMoreButtonSelector: string
-
-// scrapeRecipes : boolean
-// recipeSelector: string
-// seeMoreButtonSelector: string
