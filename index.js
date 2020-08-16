@@ -289,9 +289,11 @@ async function scrapeWoksOfLife({
 
                 })
 
+
             return prevRecipeLinks.concat(parsedRecipeLinks)
 
         }, Promise.resolve([]))
+
 
     const recipesToParse = allRecipeLinks.slice(0, maxCount)
 
@@ -322,10 +324,160 @@ async function scrapeWoksOfLife({
     // https://stackoverflow.com/questions/40832949/how-to-end-instancejs-instance-after-chaining-promises
 }
 
+async function scrapeRecipeWebsite({
+    maxCount = 1,
+    name = "Recipes",
+    url,
+    show = false,
+    devTools = false,
+    multibar = null,
+    categoryLinkSelector,
+    recipeLinkSelector,
+    seeMoreRecipesSelector,
+} = {}) {
+    /*
+    ERROR HANDLING START
+    */
+    if (!url) throw new Error('NoWebsiteEntryPointException: To scrape recipes, please provide a starting URL for the website you want to scrape recipes from.')
+
+    const recipeSelectorContainsAnchor =
+        recipeLinkSelector.split(" ").includes('a') ||
+        recipeLinkSelector.split(".").includes('a') ||
+        recipeLinkSelector.split("#").includes('a')
+
+    if (!recipeLinkSelector || !recipeSelectorContainsAnchor) throw new Error('NoRecipeLinkSelectorException: To scrape recipes, please provide a CSS selector to identify links (anchor tags) to recipe pages.')
+
+    if (categoryLinkSelector) {
+        const categorySelectorContainsAnchor =
+        categoryLinkSelector.split(" ").includes('a') ||
+        categoryLinkSelector.split(".").includes('a') ||
+        categoryLinkSelector.split("#").includes('a')
+
+        if (!categorySelectorContainsAnchor) throw new Error('NoCategoryLinkSelectorException: To scrape recipes, please provide a CSS selector to identify links (anchor tags) to recipe category pages.')
+    }
+
+    /*
+    ERROR HANDLING END
+    */
+
+    const instance = Nightmare({
+        openDevTools: devTools,
+        show
+    })
+
+    // SCRAPE STARTING URL FOR RECIPE CATEGORY PAGES
+    const recipeListPages = []
+
+    if (categoryLinkSelector) {
+        const categoryPages = await instance
+            .goto(url)
+            .evaluate((categoryLinkSelector) => {
+                const matches = document.querySelectorAll(categoryLinkSelector)
+
+                const categoryLinks = Object.keys(matches).map(k => matches[k].href)
+
+                return categoryLinks
+            }, categoryLinkSelector)
+
+        recipeListPages.push(...categoryPages)
+    } else recipeListPages.push(url)
+
+    // SCRAPE RECIPE LINKS FROM SCRAPED RECIPE CATEGORY PAGES
+    const allRecipeLinks = await recipeListPages
+        .reduce(async (accumulator, url) => {
+
+            const prevRecipeLinks = await accumulator;
+
+            if (prevRecipeLinks.length >= maxCount) return prevRecipeLinks
+
+            const remaining = maxCount - prevRecipeLinks.length
+
+            const parsedRecipeLinks = await instance.goto(url)
+                .evaluate(async (remaining, recipeLinkSelector, seeMoreRecipesSelector) => {
+
+                    const findRecipeLinks = () => {
+
+                        const matches = document.querySelectorAll(recipeLinkSelector)
+
+                        return Object.keys(matches)
+                            .map(k => matches[k].href || '')
+
+                    }
+
+                    const recipePages = []
+
+                    recipePages.push(
+                        ...findRecipeLinks()
+                    );
+
+                    console.log("SEARCHING", remaining)
+                    while (seeMoreRecipesSelector && recipePages.length <= remaining) {
+                        const seeMoreButton = document.querySelector(seeMoreRecipesSelector)
+
+                        // TODO - Not working, travels to new page; script no longer running
+                        if (seeMoreButton) {
+                            seeMoreButton.click()
+                            await new Promise(resolve => setTimeout(resolve, 3000))
+                        }
+                            
+                        else break
+
+                        recipePages.push(
+                            ...findRecipeLinks()
+                        );
+
+                    }
+
+                    return recipePages
+
+                }, remaining, recipeLinkSelector, seeMoreRecipesSelector)
+
+
+            return prevRecipeLinks.concat(parsedRecipeLinks)
+
+        }, Promise.resolve([]))
+
+
+    // REDUCE NUMBER OF RECIPES TO PARSE
+    const recipesToParse = allRecipeLinks.slice(0, maxCount)
+
+    let totalNumRecipes = recipesToParse.length
+
+    // SET UP PROGRESS BAR FOR CLI USERS
+    const progressBar = multibar ? multibar.create(totalNumRecipes, 0) : (new cliProgress.SingleBar({}, cliProgress.Presets.shades_classic));
+
+
+    progressBar.start(totalNumRecipes, 0)
+
+    const allRecipeInfo = await recipesToParse
+        .reduce(async (accumulator, url) => {
+
+            const prevRecipeInfo = await accumulator;
+
+            const parsedRecipeInfo = await parseWordPressRecipe(url, instance)
+
+            const updateObj = { title: name }
+
+            if (!parsedRecipeInfo) progressBar.setTotal(--totalNumRecipes)
+
+            progressBar.update(prevRecipeInfo.length + 1, updateObj);
+
+            return prevRecipeInfo.concat(parsedRecipeInfo ? [parsedRecipeInfo] : [])
+
+        }, Promise.resolve([]))
+
+    progressBar.stop()
+    
+    return { data: allRecipeInfo, instance }
+
+}
+
 // TESTED FOR
 // https://norecipes.com/
 // https://www.justonecookbook.com/
 // https://thewoksoflife.com/recipe-list/
+// https://www.kawalingpinoy.com/category/recipe-index/
+// https://www.chinasichuanfood.com/?s=
 async function parseWordPressRecipe(url, instance) {
     await instance.goto(url)
 
@@ -368,9 +520,9 @@ async function parseWordPressRecipe(url, instance) {
 
                 const recipeSummary = (document.querySelector('[class*="recipe-summary"]') || {}).innerText || ''
 
-                const recipeCourse = normalizeStr((document.querySelector('[class*="recipe-course"]:not([class*="recipe-course-label"]):not([class*="recipe-course-container"])') || {}).innerText)
+                const recipeCourse = normalizeStr((document.querySelector('[class*="recipe-course-container"] [class*="recipe-course"]:not([class*="recipe-course-label"]):not([class*="recipe-icon"])') || {}).innerText)
 
-                const recipeCuisine = normalizeStr((document.querySelector('[class*="recipe-cuisine"]:not([class*="recipe-cuisine-label"]):not([class*="recipe-cuisine-container"])') || {}).innerText)
+                const recipeCuisine = normalizeStr((document.querySelector('[class*="recipe-cuisine-container"] [class*="recipe-cuisine"]:not([class*="recipe-cuisine-label"]):not([class*="recipe-icon"])') || {}).innerText)
 
                 const recipePrepTime = (document.querySelector('[class*="prep_time"]') || {}).innerText
 
@@ -473,36 +625,26 @@ async function parseWordPressRecipe(url, instance) {
             })
 }
 
-const writeAndCleanup = (recipes, prefix, instance) => {
+const writeRecipes = (recipes, prefix) => {
     fs.writeFileSync(`${OUTPUT_PATH}/${prefix}.json`, JSON.stringify(recipes))
-
-    return instance.end()
 }
 
 Promise.all([
-    scrapeNoRecipes({
+    scrapeRecipeWebsite({
+        recipeLinkSelector: 'a.entry-image-link',
+        seeMoreRecipesSelector: 'li.pagination-next a',
+        url: 'https://www.kawalingpinoy.com/blog/',
         maxCount: 100,
-        multibar
+        multibar,
+        show: true,
+        devTools: true,
+        name: "Kawaling Pinoy"
     }).then(
-        ({ data, instance }) => writeAndCleanup(data, "norecipes_index", instance)
-    ),
-    scrapeJustOneCookBook({
-        maxCount: 100,
-        multibar
-    }).then(
-        ({ data, instance }) => writeAndCleanup(data, "just_one_cookbook_index", instance)
-    ),
-    scrapeWoksOfLife({
-        maxCount: 100,
-        multibar
-    }).then(
-        ({ data, instance }) => writeAndCleanup(data, "woks_of_life_index", instance)
-    ),
-    scrapePressureCookRecipes({
-        maxCount: 100,
-        multibar
-    }).then(
-        ({ data, instance }) => writeAndCleanup(data, "pressure_cook_recipes_index", instance)
+        ({ data, instance }) => {
+            writeRecipes(data, "kp_index")
+
+            return instance.end()
+        }
     )
 
 ]).then(() => multibar.stop())
@@ -521,3 +663,17 @@ Promise.all([
 
 // WPURP
 // https://hispanickitchen.com/?s=
+
+
+
+// UNIVERSAL SCRAPER
+
+// maxCount: number
+
+// scrapeCategories : boolean
+// categorySelector: string
+// seeMoreButtonSelector: string
+
+// scrapeRecipes : boolean
+// recipeSelector: string
+// seeMoreButtonSelector: string
