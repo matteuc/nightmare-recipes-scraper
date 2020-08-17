@@ -1,6 +1,19 @@
 const Nightmare = require('nightmare')
 const cliProgress = require('cli-progress');
 
+const WP_TYPE = "WP"
+
+const ZL_TYPE = "ZL"
+
+const ERS_TYPE = "ERS"
+
+
+const RECIPE_TYPES = [
+    WP_TYPE,
+    ZL_TYPE,
+    ERS_TYPE
+]
+
 async function scrapeJustOneCookBook({
     maxCount = 5,
     multibar
@@ -311,4 +324,473 @@ async function scrapeWoksOfLife({
     return { data: allRecipeInfo, instance }
 
     // https://stackoverflow.com/questions/40832949/how-to-end-instancejs-instance-after-chaining-promises
+}
+
+// TESTED FOR
+// https://norecipes.com/
+// https://www.justonecookbook.com/
+// https://thewoksoflife.com/recipe-list/
+// https://www.kawalingpinoy.com/category/recipe-index/
+// https://www.chinasichuanfood.com/?s=
+async function parseWordPressRecipe(instance) {
+    await handleScrollThrough(instance)
+
+    return instance
+        .evaluate(
+            () => {
+                /* 
+                    FUNCTIONS START
+                */
+                const parseNumber = s => !isNaN(s) ? parseFloat(s) : ([n, d] = s.split(/\D/), d) ? (n || 1) / d : '131111121234151357'[i = s.charCodeAt() % 63 % 20] / -~'133689224444557777'[i]
+
+                const normalizeStr = (s = '') => s.trim().toLowerCase()
+
+                const extractImage = i => ({
+                    src: i.getAttribute("nitro-lazy-src") || i.getAttribute('src')
+                        || '',
+                    alt: i.getAttribute('alt')
+                })
+
+                /*
+                    FUNCTIONS END
+                */
+
+                const recipeName = (document.querySelector('[class*="recipe-name"]') || {}).innerText
+
+                // If a recipe name not found, return
+                if (!recipeName) return null
+
+                const recipeSummary = (document.querySelector('[class*="recipe-summary"]') || {}).innerText || ''
+
+                const recipeCourse = normalizeStr((document.querySelector('[class*="recipe-course-container"] [class*="recipe-course"]:not([class*="recipe-course-label"]):not([class*="recipe-icon"]):not([class*="recipe-course-name"])') || {}).innerText)
+
+                const recipeCuisine = normalizeStr((document.querySelector('[class*="recipe-cuisine-container"] [class*="recipe-cuisine"]:not([class*="recipe-cuisine-label"]):not([class*="recipe-icon"]):not([class*="recipe-cuisine-name"])') || {}).innerText)
+
+                const recipePrepTime = (document.querySelector('[class*="prep_time"]') || {}).innerText
+
+                const recipePrepTimeUnit = (document.querySelector('[class*="prep_time-unit"]') || {}).innerText
+
+                const recipeCookTime = (document.querySelector('[class*="cook_time"]') || {}).innerText
+
+                const recipeCookTimeUnit = (document.querySelector('[class*="cook_time-unit"]') || {}).innerText
+
+                const recipeTotalTime = (document.querySelector('[class*="total_time"]') || {}).innerText
+
+                const recipeTotalTimeUnit = (document.querySelector('[class*="total_time-unit"]') || {}).innerText
+
+                const recipeServings = (document.querySelector('[class*="recipe-servings-container"]') || {}).innerText
+
+                let recipeServingSize
+
+                if (recipeServings) {
+                    let tmp = recipeServings.split(":")[1]
+
+                    if (!tmp) return
+
+                    tmp = tmp.trim()
+
+                    recipeServingSize = tmp.split(" ")[0]
+
+                }
+
+                const recipeImages = Object.values(
+                    document.querySelectorAll('[class*="wp-image"]') || {})
+                    .filter(i => {
+                        return (extractImage(i).src || "").includes("http")
+                    }
+                    )
+                    .map(i => extractImage(i))
+
+                const recipeIngredients = Object.values(
+                    document.querySelectorAll('li[class*="recipe-ingredient"]') || {})
+                    .map(ri => {
+                        const amount = parseNumber(
+                            (ri.querySelector('[class*=recipe-ingredient-amount]') || {}).innerText || ''
+                        )
+
+                        const unit = (ri.querySelector('[class*=recipe-ingredient-unit]') || {}).innerText
+
+                        const name = normalizeStr(((ri.querySelector('[class*=recipe-ingredient-name]') || {}).innerText || '').replace(/\([^)]*\)/g, ''))
+
+                        return {
+                            amount,
+                            unit,
+                            name
+                        }
+
+                    })
+
+
+                const recipeInstructions = Object.values(
+                    document.querySelectorAll('[class$="recipe-instruction"]') || {})
+                    .map((ri, idx) => {
+                        const description = (ri.querySelector('[class*=recipe-instruction-text]') || {}).innerText
+
+                        const images = Object.values(
+                            ri.querySelectorAll('[class*=recipe-instruction-image] img') || {}
+                        )
+                            .map(i => extractImage(i))
+
+                        return {
+                            step: idx + 1,
+                            description,
+                            images
+                        }
+
+                    })
+
+                return {
+                    link: document.URL,
+                    name: recipeName,
+                    summary: recipeSummary,
+                    course: recipeCourse,
+                    cuisine: recipeCuisine,
+                    timing: (recipePrepTime || recipeCookTime || recipeTotalTime) ? {
+                        prep: {
+                            value: parseInt(recipePrepTime),
+                            unit: recipePrepTimeUnit
+                        },
+                        cook: {
+                            value: parseInt(recipeCookTime),
+                            unit: recipeCookTimeUnit
+                        },
+                        total: {
+                            value: parseInt(recipeTotalTime),
+                            unit: recipeTotalTimeUnit
+                        },
+                    } : null,
+                    ingredients: recipeIngredients,
+                    instructions: recipeInstructions,
+                    images: recipeImages,
+                    servings: parseInt(recipeServingSize)
+                }
+            })
+}
+
+// TESTED FOR
+// https://www.japanesecooking101.com/?s=
+// https://ladyandpups.com/?s=
+async function parseZLRecipe(instance) {
+
+    await handleScrollThrough(instance)
+
+    return instance
+        .evaluate(
+            () => {
+                /* 
+                    FUNCTIONS START
+                */
+                const parseNumber = s => !isNaN(s) ? parseFloat(s) : ([n, d] = s.split(/\D/), d) ? (n || 1) / d : '131111121234151357'[i = s.charCodeAt() % 63 % 20] / -~'133689224444557777'[i]
+
+                const normalizeStr = (s = '') => s.trim().toLowerCase()
+
+                const extractImage = i => ({
+                    src: i.getAttribute("nitro-lazy-src") || i.getAttribute('src')
+                        || '',
+                    alt: i.getAttribute('alt')
+                })
+
+                /*
+                    FUNCTIONS END
+                */
+
+                const recipeName = (document.querySelector('[id*="recipe-title"]') || {}).innerText
+
+                // If a recipe name not found, return
+                if (!recipeName) return null
+
+                const recipeSummary = (document.querySelector('[class*="recipe-summary"]') || {}).innerText || ''
+
+                // NOT FOUND IN ZL RECIPES
+                const recipeCourse = ''
+
+                // NOT FOUND IN ZL RECIPES
+                const recipeCuisine = ''
+
+                /*
+                PARSE RECIPE TIME START
+                */
+                const recipePrepTimeISOContainer = document.querySelector('[itemprop="prepTime"]')
+
+                const recipePrepTime = recipePrepTimeISOContainer ? recipePrepTimeISOContainer.getAttribute('content') : null
+
+                const recipeCookTimeISOContainer = document.querySelector('[itemprop="cookTime"]')
+
+                const recipeCookTime = recipeCookTimeISOContainer ? recipeCookTimeISOContainer.getAttribute('content') : null
+
+                /*
+                PARSE RECIPE TIME END
+                */
+
+                const recipeServings = (document.querySelector('[class*="zlrecipe-serving-size"]') || document.querySelector('[class*="zlrecipe-yield"]') || {}).innerText
+
+                let recipeServingSize
+
+                if (recipeServings) {
+                    let tmp = recipeServings.split(":")[1]
+
+                    if (!tmp) return
+
+                    tmp = tmp.trim()
+
+                    recipeServingSize = tmp.split(" ")[0]
+
+                }
+
+                const recipeImages = Object.values(
+                    document.querySelectorAll('[class*="wp-image"]') || {})
+                    .filter(i => {
+                        return (extractImage(i).src || "").includes("http")
+                    }
+                    )
+                    .map(i => extractImage(i))
+
+                const recipeIngredients = Object.values(
+                    document.querySelectorAll('ul[id*="recipe-ingredients-list"] li.ingredient') || {})
+                    .map(ri => {
+
+                        // WIP : No separation of quantity, unit, and name
+                        const name = normalizeStr(ri.innerText)
+
+                        return {
+                            name
+                        }
+
+                    })
+
+
+                const recipeInstructions = Object.values(
+                    document.querySelectorAll('ol[id*="recipe-instructions-list"]') || {})
+                    .map((ri, idx) => {
+                        const description = (ri.querySelector('li.instruction') || {}).innerText
+
+                        return {
+                            step: idx + 1,
+                            description,
+                            images: []
+                        }
+
+                    })
+
+                return {
+                    link: document.URL,
+                    name: recipeName,
+                    summary: recipeSummary,
+                    course: recipeCourse,
+                    cuisine: recipeCuisine,
+                    timing: {
+                        prep: recipePrepTime,
+                        cook: recipeCookTime,
+                    },
+                    ingredients: recipeIngredients,
+                    instructions: recipeInstructions,
+                    images: recipeImages,
+                    servings: parseInt(recipeServingSize)
+                }
+            })
+        .then(r => {
+
+
+            if (r) {
+                const {
+                    timing: {
+                        prep: recipePrepTimeISO,
+                        cook: recipeCookTimeISO
+                    }
+                } = r
+
+                const unit = "mins"
+
+
+                const recipeCookTime = recipeCookTimeISO ? moment.duration(recipeCookTimeISO).asMinutes() : null
+
+                const recipePrepTime = recipePrepTimeISO ? moment.duration(recipePrepTimeISO).asMinutes() : null
+
+                const recipeTotalTime = (recipePrepTime || recipeCookTime) ? (recipePrepTime || 0) + (recipeCookTime || 0) : null
+
+                return {
+                    ...r,
+                    timing: (recipePrepTime || recipeCookTime || recipeTotalTime) ? {
+                        prep: recipePrepTime ? {
+                            value: recipePrepTime,
+                            unit
+                        } : {},
+                        cook: recipeCookTime ? {
+                            value: recipeCookTime,
+                            unit
+                        } : {},
+                        total: recipeTotalTime ? {
+                            value: recipeTotalTime,
+                            unit
+                        } : {},
+                    } : null,
+                }
+            }
+
+            return r
+        })
+}
+// TESTED FOR
+// https://shesimmers.com/?s=
+// http://www.itsmydish.com/?s=
+async function parseERSRecipe(instance) {
+
+    await handleScrollThrough(instance)
+
+    return instance
+        .evaluate(
+            () => {
+                /* 
+                    FUNCTIONS START
+                */
+                const parseNumber = s => !isNaN(s) ? parseFloat(s) : ([n, d] = s.split(/\D/), d) ? (n || 1) / d : '131111121234151357'[i = s.charCodeAt() % 63 % 20] / -~'133689224444557777'[i]
+
+                const normalizeStr = (s = '') => s.trim().toLowerCase()
+
+                const extractImage = i => ({
+                    src: i.getAttribute("nitro-lazy-src") || i.getAttribute('src')
+                        || '',
+                    alt: i.getAttribute('alt')
+                })
+
+                /*
+                    FUNCTIONS END
+                */
+
+                const recipeName = (document.querySelector('[class*="ERSName"]') || {}).innerText
+
+                // If a recipe name not found, return
+                if (!recipeName) return null
+
+                const recipeSummary = (document.querySelector('[class*="ERSSummary"]') || {}).innerText || ''
+
+                const recipeCourse = (document.querySelector('[itemprop="recipeCategory"]') || {}).innerText
+
+                const recipeCuisine = (document.querySelector('[itemprop="recipeCuisine"]') || {}).innerText
+
+                /*
+                PARSE RECIPE TIME START
+                */
+                const recipePrepTimeISOContainer = document.querySelector('[itemprop="prepTime"]')
+
+                const recipePrepTime = recipePrepTimeISOContainer ? recipePrepTimeISOContainer.getAttribute('datetime') : null
+
+                const recipeCookTimeISOContainer = document.querySelector('[itemprop="cookTime"]')
+
+                const recipeCookTime = recipeCookTimeISOContainer ? recipeCookTimeISOContainer.getAttribute('datetime') : null
+
+                /*
+                PARSE RECIPE TIME END
+                */
+
+                const recipeServings = (document.querySelector('[itemprop="recipeYield"]') || {}).innerText
+
+                let recipeServingSize
+
+                if (recipeServings) {
+                    let tmp = recipeServings.split(" ")[1]
+
+                    if (!tmp) return
+
+                    tmp = tmp.trim()
+
+                    recipeServingSize = tmp.split(" ")[0]
+
+                }
+
+                const recipeImages = Object.values({
+                    ...(document.querySelectorAll('[class*="wp-image"]') || {}),
+                    ...(document.querySelectorAll('a[rel="lightbox"] img') || {})
+                }
+                )
+                    .filter(i => {
+                        return (extractImage(i).src || "").includes("http")
+                    }
+                    )
+                    .map(i => extractImage(i))
+
+                const recipeIngredients = Object.values(
+                    document.querySelectorAll('.ERSIngredients li.ingredient') || {})
+                    .map(ri => {
+
+                        // WIP : No separation of quantity, unit, and name
+                        const name = normalizeStr(ri.innerText)
+
+                        return {
+                            name
+                        }
+
+                    })
+
+
+                const recipeInstructions = Object.values(
+                    document.querySelectorAll('.ERSInstructions li.instruction') || {})
+                    .map((ri, idx) => {
+                        const description = ri.innerText
+
+                        return {
+                            step: idx + 1,
+                            description,
+                            images: []
+                        }
+
+                    })
+
+                return {
+                    link: document.URL,
+                    name: recipeName,
+                    summary: recipeSummary,
+                    course: recipeCourse,
+                    cuisine: recipeCuisine,
+                    timing: {
+                        prep: recipePrepTime,
+                        cook: recipeCookTime,
+                    },
+                    ingredients: recipeIngredients,
+                    instructions: recipeInstructions,
+                    images: recipeImages,
+                    servings: parseInt(recipeServingSize)
+                }
+            })
+        .then(r => {
+
+
+            if (r) {
+                const {
+                    timing: {
+                        prep: recipePrepTimeISO,
+                        cook: recipeCookTimeISO
+                    }
+                } = r
+
+                const unit = "mins"
+
+
+                const recipeCookTime = recipeCookTimeISO ? moment.duration(recipeCookTimeISO).asMinutes() : null
+
+                const recipePrepTime = recipePrepTimeISO ? moment.duration(recipePrepTimeISO).asMinutes() : null
+
+                const recipeTotalTime = (recipePrepTime || recipeCookTime) ? (recipePrepTime || 0) + (recipeCookTime || 0) : null
+
+                return {
+                    ...r,
+                    timing: (recipePrepTime || recipeCookTime || recipeTotalTime) ? {
+                        prep: recipePrepTime ? {
+                            value: recipePrepTime,
+                            unit
+                        } : {},
+                        cook: recipeCookTime ? {
+                            value: recipeCookTime,
+                            unit
+                        } : {},
+                        total: recipeTotalTime ? {
+                            value: recipeTotalTime,
+                            unit
+                        } : {},
+                    } : null,
+                }
+            }
+
+            return r
+        })
 }
