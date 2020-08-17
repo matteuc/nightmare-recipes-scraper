@@ -1,23 +1,14 @@
 const Nightmare = require('nightmare')
 const cliProgress = require('cli-progress');
 const moment = require('moment')
+const parseDuration = require('parse-duration')
+const { parse: parseIngredient } = require('recipe-ingredient-parser-v2');
+
+
 
 const fs = require('fs')
 
 const OUTPUT_PATH = 'generated'
-
-const WP_TYPE = "WP"
-
-const ZL_TYPE = "ZL"
-
-const ERS_TYPE = "ERS"
-
-
-const RECIPE_TYPES = [
-    WP_TYPE,
-    ZL_TYPE,
-    ERS_TYPE
-]
 
 const multibar = new cliProgress.MultiBar({
     format: '{title} |' + '{bar}' + '| {percentage}% || {value}/{total} Recipes',
@@ -63,7 +54,11 @@ async function scrapeRecipeWebsite({
 
     const instance = Nightmare({
         openDevTools: devTools,
-        show
+        show,
+        webPreferences: {
+            images: false,
+            webgl: false
+        }
     })
 
     // SCRAPE STARTING URL FOR RECIPE CATEGORY PAGES
@@ -159,8 +154,6 @@ async function scrapeRecipeWebsite({
 
             }
 
-
-
             return prevRecipeLinks.concat(parsedRecipeLinks)
 
         }, Promise.resolve([]))
@@ -180,43 +173,7 @@ async function scrapeRecipeWebsite({
 
             const prevRecipeInfo = await accumulator;
 
-            // Determine type of recipe structure
-
-            const recipeType = await instance.goto(url)
-                .evaluate((WP_TYPE, ZL_TYPE, ERS_TYPE) => {
-                    const wpRecipeName = (document.querySelector('[class*="wprm-recipe-name"]') || {}).innerText
-
-                    const zlRecipeName = (document.querySelector('[id*="zlrecipe-title"]') || {}).innerText
-
-                    const ersRecipeName = (document.querySelector('[class*="ERSName"]') || {}).innerText
-
-                    if (wpRecipeName) return WP_TYPE
-
-                    if (zlRecipeName) return ZL_TYPE
-
-                    if (ersRecipeName) return ERS_TYPE
-
-                    return null
-
-                }, ...RECIPE_TYPES)
-
-
-            let parseRecipe
-
-            switch (recipeType) {
-                case WP_TYPE:
-                    parseRecipe = parseWordPressRecipe
-                    break
-                case ZL_TYPE:
-                    parseRecipe = parseZLRecipe
-                    break
-                case ERS_TYPE:
-                    parseRecipe = parseERSRecipe
-                    break
-                default:
-                    parseRecipe = () => null
-                    break
-            }
+            await instance.goto(url)
 
             const parsedRecipeInfo = await parseRecipe(instance)
 
@@ -235,34 +192,38 @@ async function scrapeRecipeWebsite({
     return { data: allRecipeInfo, instance }
 
 }
-
-// TESTED FOR
-// https://norecipes.com/
-// https://www.justonecookbook.com/
-// https://thewoksoflife.com/recipe-list/
-// https://www.kawalingpinoy.com/category/recipe-index/
-// https://www.chinasichuanfood.com/?s=
-async function parseWordPressRecipe(instance) {
-    let currentHeight = 0;
-
+async function scrapeRecipe({
+    url,
+    show = false,
+    devTools = false,
+} = {}) {
     /*
-        SCROLL THROUGH START
+    ERROR HANDLING START
     */
-    const totalHeight = await instance.evaluate(function () {
-        return document.body.scrollHeight;
-    });
-
-    const waitStep = 100
-
-    while (totalHeight >= currentHeight) {
-        currentHeight += totalHeight * 0.1;
-
-        await instance.scrollTo(currentHeight, 0)
-            .wait(waitStep);
-    }
+    if (!url) throw new Error('NoWebsiteEntryPointException: To scrape recipes, please provide a starting URL for the website you want to scrape recipes from.')
     /*
-        SCROLL THROUGH END
+    ERROR HANDLING END
     */
+
+    const instance = Nightmare({
+        openDevTools: devTools,
+        show,
+        webPreferences: {
+            images: false,
+            webgl: false
+        }
+    })
+
+    await instance.goto(url)
+
+    const parsedRecipeInfo = await parseRecipe(instance)
+
+    return { data: parsedRecipeInfo, instance }
+
+}
+
+async function parseRecipe(instance) {
+    await handleScrollThrough(instance)
 
     return instance
         .evaluate(
@@ -271,6 +232,8 @@ async function parseWordPressRecipe(instance) {
                     FUNCTIONS START
                 */
                 const parseNumber = s => !isNaN(s) ? parseFloat(s) : ([n, d] = s.split(/\D/), d) ? (n || 1) / d : '131111121234151357'[i = s.charCodeAt() % 63 % 20] / -~'133689224444557777'[i]
+
+                const combineBlock = (s = '', lines = 1) => s.trim().split('\n').slice(0, lines).join(' ')
 
                 const normalizeStr = (s = '') => s.trim().toLowerCase()
 
@@ -284,46 +247,121 @@ async function parseWordPressRecipe(instance) {
                     FUNCTIONS END
                 */
 
-                const recipeName = (document.querySelector('[class*="recipe-name"]') || {}).innerText
+                const recipeName = combineBlock((
+                    document.querySelector(`
+                        [id*="post-title"], 
+                        [id*="recipe-name"], 
+                        [class*="recipe-name"], 
+                        [class*="recipe-title"], 
+                        [id*="recipe-name"], 
+                        [id*="recipe-title"], 
+                        [class*="Name"], 
+                        [itemprop*="title"]
+                    `) || {}
+                ).innerText)
 
                 // If a recipe name not found, return
-                if (!recipeName) return null
+                if (!recipeName.length) return null
 
-                const recipeSummary = (document.querySelector('[class*="recipe-summary"]') || {}).innerText || ''
+                let recipeSummary = combineBlock((
+                    document.querySelector(`
+                        [class*="introduction-body"],
+                        [class*="summary"],
+                        [class*="Summary"]
+                    `) ||
+                    document.querySelector(`
+                        [itemprop*="description"]
+                    `)
+                    || {}
+                ).innerText, 3)
 
-                const recipeCourse = normalizeStr((document.querySelector('[class*="recipe-course-container"] [class*="recipe-course"]:not([class*="recipe-course-label"]):not([class*="recipe-icon"]):not([class*="recipe-course-name"])') || {}).innerText)
+                const recipeCourse = normalizeStr(
+                    (document.querySelector(`
+                        [class*="recipe-course-container"] [class*="recipe-course"]:not([class*="recipe-course-label"]):not([class*="recipe-icon"]):not([class*="recipe-course-name"]),
+                        [itemprop*="category"],
+                        [itemprop*="Category"]
+                    `) || {}
+                    ).innerText
+                )
 
-                const recipeCuisine = normalizeStr((document.querySelector('[class*="recipe-cuisine-container"] [class*="recipe-cuisine"]:not([class*="recipe-cuisine-label"]):not([class*="recipe-icon"]):not([class*="recipe-cuisine-name"])') || {}).innerText)
+                const recipeCuisine = normalizeStr(
+                    (document.querySelector(`
+                        [class*="recipe-cuisine-container"] [class*="recipe-cuisine"]:not([class*="recipe-cuisine-label"]):not([class*="recipe-icon"]):not([class*="recipe-cuisine-name"]),
+                        [itemprop*="cuisine"],
+                        [itemprop*="Cuisine"]
+                    `) || {}
+                    ).innerText
+                )
 
-                const recipePrepTime = (document.querySelector('[class*="prep_time"]') || {}).innerText
+                /*
+                    Parse Timing Start
+                */
 
-                const recipePrepTimeUnit = (document.querySelector('[class*="prep_time-unit"]') || {}).innerText
+                let recipePrepTime = (
+                    document.querySelector(`
+                        [class*="prep_time"],
+                        [itemprop*="prep"]
+                    `) || {}
+                ).innerText
 
-                const recipeCookTime = (document.querySelector('[class*="cook_time"]') || {}).innerText
+                const recipePrepTimeUnit = (
+                    document.querySelector(`
+                        [class*="prep_time-unit"]
+                    `) || {}
+                ).innerText
 
-                const recipeCookTimeUnit = (document.querySelector('[class*="cook_time-unit"]') || {}).innerText
+                if (recipePrepTime && recipePrepTimeUnit) recipePrepTime = [recipePrepTime, recipePrepTimeUnit].join(' ')
 
-                const recipeTotalTime = (document.querySelector('[class*="total_time"]') || {}).innerText
+                let recipeCookTime = (
+                    document.querySelector(`
+                        [class*="cook_time"], 
+                        [itemprop*="cook"]
+                        `) || {}
+                ).innerText
 
-                const recipeTotalTimeUnit = (document.querySelector('[class*="total_time-unit"]') || {}).innerText
+                const recipeCookTimeUnit = (
+                    document.querySelector(`
+                        [class*="cook_time-unit"]
+                    `) || {}
+                ).innerText
 
-                const recipeServings = (document.querySelector('[class*="recipe-servings-container"]') || {}).innerText
+                if (recipeCookTime && recipeCookTimeUnit) recipeCookTime = [recipeCookTime, recipeCookTimeUnit].join(' ')
 
-                let recipeServingSize
+                let recipeTotalTime = (
+                    document.querySelector(`
+                        [class*="total_time"], 
+                        [itemprop*="total"]
+                        `) || {}
+                ).innerText
 
-                if (recipeServings) {
-                    let tmp = recipeServings.split(":")[1]
+                const recipeTotalTimeUnit = (
+                    document.querySelector(`
+                        [class*="total_time-unit"]
+                    `) || {}
+                ).innerText
 
-                    if (!tmp) return
+                if (recipeTotalTime && recipeTotalTimeUnit) recipeTotalTime = [recipeTotalTime, recipeTotalTimeUnit].join(' ')
 
-                    tmp = tmp.trim()
+                /*
+                    Parse Timing End
+                */
 
-                    recipeServingSize = tmp.split(" ")[0]
+                const recipeServings = ((
+                    document.querySelector(`
+                        [class*="serving"],
+                        [class*="yield"],
+                        [itemprop*="yield"],
+                        [itemprop*="Yield"]
+                        `) || {}
+                ).innerText || '');
 
-                }
+                let recipeServingSize = parseInt(recipeServings.replace(/[^\d.-]/g, '').split(' ')[0])
 
                 const recipeImages = Object.values(
-                    document.querySelectorAll('[class*="wp-image"]') || {})
+                    document.querySelectorAll(`
+                        [class*="wp-image"],
+                        a[rel="lightbox"] img
+                    `) || {})
                     .filter(i => {
                         return (extractImage(i).src || "").includes("http")
                     }
@@ -331,34 +369,53 @@ async function parseWordPressRecipe(instance) {
                     .map(i => extractImage(i))
 
                 const recipeIngredients = Object.values(
-                    document.querySelectorAll('li[class*="recipe-ingredient"]') || {})
+
+                    document.querySelectorAll(`
+                        div[class*="ingredient"] li,
+                        div[id*="ingredient"] li,
+                        div[class*="Ingredient"] li,
+                        div[id*="Ingredient"] li,
+                        ol li[class*="ingredient"],
+                        ol li[itemprop*="ingredient"],
+                        ol[class*="ingredient"] li,
+                        ol[class*="Ingredient"] li,
+                        ol[id*="ingredient"] li,
+                        ol[id*="Ingredient"] li
+                    `) || {})
                     .map(ri => {
-                        const amount = parseNumber(
-                            (ri.querySelector('[class*=recipe-ingredient-amount]') || {}).innerText || ''
-                        )
 
-                        const unit = (ri.querySelector('[class*=recipe-ingredient-unit]') || {}).innerText
-
-                        const name = normalizeStr(((ri.querySelector('[class*=recipe-ingredient-name]') || {}).innerText || '').replace(/\([^)]*\)/g, ''))
+                        const original = combineBlock(normalizeStr(ri.innerText))
 
                         return {
-                            amount,
-                            unit,
-                            name
+                            original
                         }
 
                     })
 
+                const recipeInstructionsContainer = document.querySelector(`
+                    div[class*="instruction"],
+                    div[id*="instruction"],
+                    div[class*="Instruction"],
+                    div[id*="Instruction"],
+                    ol[class*="instruction"],
+                    ol[class*="Instruction"],
+                    ol[id*="instruction"],
+                    ol[id*="Instruction"]
+                `)
 
                 const recipeInstructions = Object.values(
-                    document.querySelectorAll('[class$="recipe-instruction"]') || {})
+                    recipeInstructionsContainer ?
+                        recipeInstructionsContainer.querySelectorAll(`
+                        li,
+                        li[class*="instruction"],
+                        li[itemprop*="instruction"]
+                    `) || {} : {})
                     .map((ri, idx) => {
-                        const description = (ri.querySelector('[class*=recipe-instruction-text]') || {}).innerText
+                        const description = combineBlock(ri.innerText, 2)
 
                         const images = Object.values(
-                            ri.querySelectorAll('[class*=recipe-instruction-image] img') || {}
-                        )
-                            .map(i => extractImage(i))
+                            ri.querySelectorAll('img') || {}
+                        ).map(i => extractImage(i))
 
                         return {
                             step: idx + 1,
@@ -374,38 +431,69 @@ async function parseWordPressRecipe(instance) {
                     summary: recipeSummary,
                     course: recipeCourse,
                     cuisine: recipeCuisine,
-                    timing: (recipePrepTime || recipeCookTime || recipeTotalTime) ? {
-                        prep: {
-                            value: parseInt(recipePrepTime),
-                            unit: recipePrepTimeUnit
+                    timing: [
+                        {
+                            type: 'prep',
+                            original: recipePrepTime
                         },
-                        cook: {
-                            value: parseInt(recipeCookTime),
-                            unit: recipeCookTimeUnit
+                        {
+                            type: 'cook',
+                            original: recipeCookTime
                         },
-                        total: {
-                            value: parseInt(recipeTotalTime),
-                            unit: recipeTotalTimeUnit
-                        },
-                    } : null,
+                        {
+                            type: 'total',
+                            original: recipeTotalTime
+                        }
+                    ].filter(t => t.original),
                     ingredients: recipeIngredients,
                     instructions: recipeInstructions,
                     images: recipeImages,
-                    servings: parseInt(recipeServingSize)
+                    servings: {
+                        original: recipeServings,
+                        transform: recipeServingSize
+                    }
                 }
             })
+        .then(r => {
+
+            if (!r.timing) return r
+
+            return {
+                ...r,
+                // Transform timing strings
+                timing: r.timing.map(t => ({
+                    ...t,
+                    value: parseDuration(t.original, 'm'),
+                    unit: 'mins'
+                })),
+                // Transform ingredients
+                ingredients: r.ingredients.map(i => {
+
+                    const parsedIngredient = parseIngredient(i.original
+                        .replace('.', '') //Remove .
+                        .replace(/\([^)]*\)/g, '') //Remove ingredient explainations wrapped in ()
+                        .split(',')[0] // Remove ingredient explainations
+                        .split(' for ')[0] // Remove ingredient explainations
+                        || '')
+
+                    const { quantity, unit, ingredient } = parsedIngredient
+
+                    return {
+                        ...i,
+                        unit,
+                        quantity: parseFloat(quantity),
+                        ingredient,
+                    }
+
+                })
+            }
+
+        })
 }
 
-// TESTED FOR
-// https://www.japanesecooking101.com/?s=
-// https://ladyandpups.com/?s=
-async function parseZLRecipe(instance) {
-
+async function handleScrollThrough(instance) {
     let currentHeight = 0;
 
-    /*
-        SCROLL THROUGH START
-    */
     const totalHeight = await instance.evaluate(function () {
         return document.body.scrollHeight;
     });
@@ -414,353 +502,9 @@ async function parseZLRecipe(instance) {
 
     while (totalHeight >= currentHeight) {
         currentHeight += totalHeight * 0.1;
-
         await instance.scrollTo(currentHeight, 0)
             .wait(waitStep);
     }
-    /*
-        SCROLL THROUGH END
-    */
-
-    return instance
-        .evaluate(
-            () => {
-                /* 
-                    FUNCTIONS START
-                */
-                const parseNumber = s => !isNaN(s) ? parseFloat(s) : ([n, d] = s.split(/\D/), d) ? (n || 1) / d : '131111121234151357'[i = s.charCodeAt() % 63 % 20] / -~'133689224444557777'[i]
-
-                const normalizeStr = (s = '') => s.trim().toLowerCase()
-
-                const extractImage = i => ({
-                    src: i.getAttribute("nitro-lazy-src") || i.getAttribute('src')
-                        || '',
-                    alt: i.getAttribute('alt')
-                })
-
-                /*
-                    FUNCTIONS END
-                */
-
-                const recipeName = (document.querySelector('[id*="recipe-title"]') || {}).innerText
-
-                // If a recipe name not found, return
-                if (!recipeName) return null
-
-                const recipeSummary = (document.querySelector('[class*="recipe-summary"]') || {}).innerText || ''
-
-                // NOT FOUND IN ZL RECIPES
-                const recipeCourse = ''
-
-                // NOT FOUND IN ZL RECIPES
-                const recipeCuisine = ''
-
-                /*
-                PARSE RECIPE TIME START
-                */
-                const recipePrepTimeISOContainer = document.querySelector('[itemprop="prepTime"]')
-
-                const recipePrepTime = recipePrepTimeISOContainer ? recipePrepTimeISOContainer.getAttribute('content') : null
-
-                const recipeCookTimeISOContainer = document.querySelector('[itemprop="cookTime"]')
-
-                const recipeCookTime = recipeCookTimeISOContainer ? recipeCookTimeISOContainer.getAttribute('content') : null
-
-                /*
-                PARSE RECIPE TIME END
-                */
-
-                const recipeServings = (document.querySelector('[class*="zlrecipe-serving-size"]') || document.querySelector('[class*="zlrecipe-yield"]') || {}).innerText
-
-                let recipeServingSize
-
-                if (recipeServings) {
-                    let tmp = recipeServings.split(":")[1]
-
-                    if (!tmp) return
-
-                    tmp = tmp.trim()
-
-                    recipeServingSize = tmp.split(" ")[0]
-
-                }
-
-                const recipeImages = Object.values(
-                    document.querySelectorAll('[class*="wp-image"]') || {})
-                    .filter(i => {
-                        return (extractImage(i).src || "").includes("http")
-                    }
-                    )
-                    .map(i => extractImage(i))
-
-                const recipeIngredients = Object.values(
-                    document.querySelectorAll('ul[id*="recipe-ingredients-list"] li.ingredient') || {})
-                    .map(ri => {
-
-                        // WIP : No separation of quantity, unit, and name
-                        const name = normalizeStr(ri.innerText)
-
-                        return {
-                            name
-                        }
-
-                    })
-
-
-                const recipeInstructions = Object.values(
-                    document.querySelectorAll('ol[id*="recipe-instructions-list"]') || {})
-                    .map((ri, idx) => {
-                        const description = (ri.querySelector('li.instruction') || {}).innerText
-
-                        return {
-                            step: idx + 1,
-                            description,
-                            images: []
-                        }
-
-                    })
-
-                return {
-                    link: document.URL,
-                    name: recipeName,
-                    summary: recipeSummary,
-                    course: recipeCourse,
-                    cuisine: recipeCuisine,
-                    timing: {
-                        prep: recipePrepTime,
-                        cook: recipeCookTime,
-                    },
-                    ingredients: recipeIngredients,
-                    instructions: recipeInstructions,
-                    images: recipeImages,
-                    servings: parseInt(recipeServingSize)
-                }
-            })
-        .then(r => {
-
-
-            if (r) {
-                const {
-                    timing: {
-                        prep: recipePrepTimeISO,
-                        cook: recipeCookTimeISO
-                    }
-                } = r
-
-                const unit = "mins"
-
-
-                const recipeCookTime = recipeCookTimeISO ? moment.duration(recipeCookTimeISO).asMinutes() : null
-
-                const recipePrepTime = recipePrepTimeISO ? moment.duration(recipePrepTimeISO).asMinutes() : null
-
-                const recipeTotalTime = (recipePrepTime || recipeCookTime) ? (recipePrepTime || 0) + (recipeCookTime || 0) : null
-
-                return {
-                    ...r,
-                    timing: (recipePrepTime || recipeCookTime || recipeTotalTime) ? {
-                        prep: recipePrepTime ? {
-                            value: recipePrepTime,
-                            unit
-                        } : {},
-                        cook: recipeCookTime ? {
-                            value: recipeCookTime,
-                            unit
-                        } : {},
-                        total: recipeTotalTime ? {
-                            value: recipeTotalTime,
-                            unit
-                        } : {},
-                    } : null,
-                }
-            }
-
-            return r
-        })
-}
-// TESTED FOR
-// http://www.itsmydish.com/?s=
-async function parseERSRecipe(instance) {
-
-    let currentHeight = 0;
-
-    /*
-        SCROLL THROUGH START
-    */
-    const totalHeight = await instance.evaluate(function () {
-        return document.body.scrollHeight;
-    });
-
-    const waitStep = 100
-
-    while (totalHeight >= currentHeight) {
-        currentHeight += totalHeight * 0.1;
-
-        await instance.scrollTo(currentHeight, 0)
-            .wait(waitStep);
-    }
-    /*
-        SCROLL THROUGH END
-    */
-
-    return instance
-        .evaluate(
-            () => {
-                /* 
-                    FUNCTIONS START
-                */
-                const parseNumber = s => !isNaN(s) ? parseFloat(s) : ([n, d] = s.split(/\D/), d) ? (n || 1) / d : '131111121234151357'[i = s.charCodeAt() % 63 % 20] / -~'133689224444557777'[i]
-
-                const normalizeStr = (s = '') => s.trim().toLowerCase()
-
-                const extractImage = i => ({
-                    src: i.getAttribute("nitro-lazy-src") || i.getAttribute('src')
-                        || '',
-                    alt: i.getAttribute('alt')
-                })
-
-                /*
-                    FUNCTIONS END
-                */
-
-                const recipeName = (document.querySelector('[class*="ERSName"]') || {}).innerText
-
-                // If a recipe name not found, return
-                if (!recipeName) return null
-
-                const recipeSummary = (document.querySelector('[class*="ERSSummary"]') || {}).innerText || ''
-
-                const recipeCourse = (document.querySelector('[itemprop="recipeCategory"]') || {}).innerText
-
-                const recipeCuisine = (document.querySelector('[itemprop="recipeCuisine"]') || {}).innerText
-
-                /*
-                PARSE RECIPE TIME START
-                */
-                const recipePrepTimeISOContainer = document.querySelector('[itemprop="prepTime"]')
-
-                const recipePrepTime = recipePrepTimeISOContainer ? recipePrepTimeISOContainer.getAttribute('datetime') : null
-
-                const recipeCookTimeISOContainer = document.querySelector('[itemprop="cookTime"]')
-
-                const recipeCookTime = recipeCookTimeISOContainer ? recipeCookTimeISOContainer.getAttribute('datetime') : null
-
-                /*
-                PARSE RECIPE TIME END
-                */
-
-                const recipeServings = (document.querySelector('[itemprop="recipeYield"]') || {}).innerText
-
-                let recipeServingSize
-
-                if (recipeServings) {
-                    let tmp = recipeServings.split(" ")[1]
-
-                    if (!tmp) return
-
-                    tmp = tmp.trim()
-
-                    recipeServingSize = tmp.split(" ")[0]
-
-                }
-
-                const recipeImages = Object.values({
-                    ...(document.querySelectorAll('[class*="wp-image"]') || {}),
-                    ...(document.querySelectorAll('a[rel="lightbox"] img') || {})
-                }
-                )
-                    .filter(i => {
-                        return (extractImage(i).src || "").includes("http")
-                    }
-                    )
-                    .map(i => extractImage(i))
-
-                console.log(recipeImages)
-
-                const recipeIngredients = Object.values(
-                    document.querySelectorAll('.ERSIngredients li.ingredient') || {})
-                    .map(ri => {
-
-                        // WIP : No separation of quantity, unit, and name
-                        const name = normalizeStr(ri.innerText)
-
-                        return {
-                            name
-                        }
-
-                    })
-
-
-                const recipeInstructions = Object.values(
-                    document.querySelectorAll('.ERSInstructions li.instruction') || {})
-                    .map((ri, idx) => {
-                        const description = ri.innerText
-
-                        return {
-                            step: idx + 1,
-                            description,
-                            images: []
-                        }
-
-                    })
-
-                return {
-                    link: document.URL,
-                    name: recipeName,
-                    summary: recipeSummary,
-                    course: recipeCourse,
-                    cuisine: recipeCuisine,
-                    timing: {
-                        prep: recipePrepTime,
-                        cook: recipeCookTime,
-                    },
-                    ingredients: recipeIngredients,
-                    instructions: recipeInstructions,
-                    images: recipeImages,
-                    servings: parseInt(recipeServingSize)
-                }
-            })
-        .then(r => {
-
-
-            if (r) {
-                const {
-                    timing: {
-                        prep: recipePrepTimeISO,
-                        cook: recipeCookTimeISO
-                    }
-                } = r
-
-                const unit = "mins"
-
-
-                const recipeCookTime = recipeCookTimeISO ? moment.duration(recipeCookTimeISO).asMinutes() : null
-
-                const recipePrepTime = recipePrepTimeISO ? moment.duration(recipePrepTimeISO).asMinutes() : null
-
-                const recipeTotalTime = (recipePrepTime || recipeCookTime) ? (recipePrepTime || 0) + (recipeCookTime || 0) : null
-
-                return {
-                    ...r,
-                    timing: (recipePrepTime || recipeCookTime || recipeTotalTime) ? {
-                        prep: recipePrepTime ? {
-                            value: recipePrepTime,
-                            unit
-                        } : {},
-                        cook: recipeCookTime ? {
-                            value: recipeCookTime,
-                            unit
-                        } : {},
-                        total: recipeTotalTime ? {
-                            value: recipeTotalTime,
-                            unit
-                        } : {},
-                    } : null,
-                }
-            }
-
-            return r
-        })
 }
 
 const writeRecipes = (recipes, prefix) => {
@@ -768,28 +512,35 @@ const writeRecipes = (recipes, prefix) => {
 }
 
 Promise.all([
-    scrapeRecipeWebsite({
-        recipeLinkSelector: '.title a',
-        seeMoreRecipesSelector: '.nav-entries a',
-        url: 'https://shesimmers.com/?s=',
-        maxCount: 15,
-        multibar,
+    // scrapeRecipeWebsite({
+    //     recipeLinkSelector: '.archive-post a',
+    //     seeMoreRecipesSelector: 'a.next',
+    //     url: 'https://damndelicious.net/category/asian-inspired/',
+    //     maxCount: 1,
+    //     multibar,
+    //     show: true,
+    //     devTools: true,
+    //     name: "Damn Delicious"
+    // }).then(
+    //     ({ data, instance }) => {
+    //         writeRecipes(data, "woks_index")
+
+    //         // return instance.end()
+    //     }
+    // ),
+    scrapeRecipe({
+        url: 'https://damndelicious.net/2018/09/18/peanut-chicken-lettuce-wraps/',
         show: true,
         devTools: true,
-        name: "She Simmers"
     }).then(
         ({ data, instance }) => {
-            writeRecipes(data, "she_simmers_index")
+            writeRecipes(data, data.name)
 
             return instance.end()
         }
     ),
 
 ]).then(() => multibar.stop())
-
-// ERS
-// https://shesimmers.com/?s=
-// http://www.itsmydish.com/?s=
 
 // WPURP
 // https://hispanickitchen.com/?s=
