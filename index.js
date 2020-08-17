@@ -237,6 +237,8 @@ async function parseRecipe(instance) {
 
                 const normalizeStr = (s = '') => s.trim().toLowerCase()
 
+                const capitalizeWords = (s = '') => s.trim().toLowerCase().split(' ').map(f => f.charAt(0).toUpperCase() + f.slice(1)).join(' ')
+
                 const extractImage = i => ({
                     src: i.getAttribute("nitro-lazy-src") || i.getAttribute('src')
                         || '',
@@ -247,18 +249,22 @@ async function parseRecipe(instance) {
                     FUNCTIONS END
                 */
 
-                const recipeName = combineBlock((
+                const recipeName = capitalizeWords(combineBlock((
                     document.querySelector(`
                         [id*="post-title"], 
                         [id*="recipe-name"], 
                         [class*="recipe-name"], 
                         [class*="recipe-title"], 
+                        [id*="recipe"] h1, 
+                        [class*="recipe"] h1, 
+                        [id*="recipe"] h2, 
+                        [class*="recipe"] h2, 
                         [id*="recipe-name"], 
                         [id*="recipe-title"], 
                         [class*="Name"], 
                         [itemprop*="title"]
                     `) || {}
-                ).innerText)
+                ).innerText))
 
                 // If a recipe name not found, return
                 if (!recipeName.length) return null
@@ -355,12 +361,17 @@ async function parseRecipe(instance) {
                         `) || {}
                 ).innerText || '');
 
-                let recipeServingSize = parseInt(recipeServings.replace(/[^\d.-]/g, '').split(' ')[0])
+                let recipeServingSize = parseInt(
+                    recipeServings.split(' ')
+                        .map(f => f.replace(/[^\d.-]/g, ''))
+                        .filter(f => f !== '')[0]
+                )
 
                 const recipeImages = Object.values(
                     document.querySelectorAll(`
                         [class*="wp-image"],
-                        a[rel="lightbox"] img
+                        a[rel="lightbox"] img,
+                        .entry-content img
                     `) || {})
                     .filter(i => {
                         return (extractImage(i).src || "").includes("http")
@@ -368,20 +379,24 @@ async function parseRecipe(instance) {
                     )
                     .map(i => extractImage(i))
 
-                const recipeIngredients = Object.values(
+                const recipeIngredientsContainer = document.querySelector(`
+                    div[class*="ingredient"],
+                    div[id*="ingredient"],
+                    div[class*="Ingredient"],
+                    div[id*="Ingredient"],
+                    ul[class*="ingredient"],
+                    ul[class*="Ingredient"],
+                    ul[id*="ingredient"],
+                    ul[id*="Ingredient"]
+                `)
 
-                    document.querySelectorAll(`
-                        div[class*="ingredient"] li,
-                        div[id*="ingredient"] li,
-                        div[class*="Ingredient"] li,
-                        div[id*="Ingredient"] li,
-                        ol li[class*="ingredient"],
-                        ol li[itemprop*="ingredient"],
-                        ol[class*="ingredient"] li,
-                        ol[class*="Ingredient"] li,
-                        ol[id*="ingredient"] li,
-                        ol[id*="Ingredient"] li
-                    `) || {})
+                const recipeIngredients = Object.values(
+                    recipeIngredientsContainer ?
+                        recipeIngredientsContainer.querySelectorAll(`
+                        li,
+                        li[class*="ingredient"],
+                        li[itemprop*="ingredient"]
+                    `) || {} : {})
                     .map(ri => {
 
                         const original = combineBlock(normalizeStr(ri.innerText))
@@ -400,7 +415,11 @@ async function parseRecipe(instance) {
                     ol[class*="instruction"],
                     ol[class*="Instruction"],
                     ol[id*="instruction"],
-                    ol[id*="Instruction"]
+                    ol[id*="Instruction"],
+                    ul[class*="instruction"],
+                    ul[class*="Instruction"],
+                    ul[id*="instruction"],
+                    ul[id*="Instruction"]
                 `)
 
                 const recipeInstructions = Object.values(
@@ -456,7 +475,9 @@ async function parseRecipe(instance) {
             })
         .then(r => {
 
-            if (!r.timing) return r
+            if (!r) return
+
+            if (!r.timing || !r.ingredients) return r
 
             return {
                 ...r,
@@ -469,12 +490,29 @@ async function parseRecipe(instance) {
                 // Transform ingredients
                 ingredients: r.ingredients.map(i => {
 
-                    const parsedIngredient = parseIngredient(i.original
+                    const iStr = i.original
                         .replace('.', '') //Remove .
                         .replace(/\([^)]*\)/g, '') //Remove ingredient explainations wrapped in ()
                         .split(',')[0] // Remove ingredient explainations
                         .split(' for ')[0] // Remove ingredient explainations
-                        || '')
+                        .split(' ').map((f, idx) => {
+                            // Account for recipe ingredients that contain recipes that have two words with digits
+
+                            // For example, '36 2-inch wonton wrappers'
+
+                            // This case breaks the package 'recipe-ingredient-parser-v2'
+
+                            const charRemoved = f.replace(/[^\d.-]/g, '')
+
+                            if (idx !== 0 && charRemoved.length > 0 && !f.includes('/')) return `(${f})`
+
+                            return f
+
+                        }).join(' ')
+                        || ''
+
+                    const parsedIngredient = iStr ? parseIngredient(iStr) : {}
+
 
                     const { quantity, unit, ingredient } = parsedIngredient
 
@@ -516,7 +554,7 @@ Promise.all([
     //     recipeLinkSelector: '.archive-post a',
     //     seeMoreRecipesSelector: 'a.next',
     //     url: 'https://damndelicious.net/category/asian-inspired/',
-    //     maxCount: 1,
+    //     maxCount: 100,
     //     multibar,
     //     show: true,
     //     devTools: true,
@@ -528,17 +566,19 @@ Promise.all([
     //         // return instance.end()
     //     }
     // ),
+
     scrapeRecipe({
-        url: 'https://damndelicious.net/2018/09/18/peanut-chicken-lettuce-wraps/',
+        url: 'https://www.justonecookbook.com/warabi-mochi/',
         show: true,
         devTools: true,
     }).then(
         ({ data, instance }) => {
-            writeRecipes(data, data.name)
+            if (data) writeRecipes(data, data.name.split(' ').join('-'))
 
             return instance.end()
         }
-    ),
+    )
+
 
 ]).then(() => multibar.stop())
 
