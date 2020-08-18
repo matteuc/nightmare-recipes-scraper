@@ -2,6 +2,7 @@ const Nightmare = require('nightmare')
 const cliProgress = require('cli-progress');
 const moment = require('moment')
 const parseDuration = require('parse-duration')
+const _ = require('lodash')
 const { parse: parseIngredient } = require('recipe-ingredient-parser-v2');
 
 const fs = require('fs')
@@ -10,12 +11,6 @@ const fs = require('fs')
 const OUTPUT_PATH = 'generated'
 
 const DEFAULT_TIMEOUT = 5000
-
-const multibar = new cliProgress.MultiBar({
-    format: '{title} |' + '{bar}' + '| {percentage}% || {value}/{total} Recipes',
-    hideCursor: true
-
-}, cliProgress.Presets.shades_grey);
 
 async function scrapeRecipeWebsite({
     maxCount = 1,
@@ -27,6 +22,7 @@ async function scrapeRecipeWebsite({
     categoryLinkSelector,
     recipeLinkSelector,
     seeMoreRecipesSelector,
+    instance
 } = {}) {
     // START: ERROR HANDLING
     if (!url) throw new Error('NoWebsiteEntryPointException: To scrape recipes, please provide a starting URL for the website you want to scrape recipes from.')
@@ -48,7 +44,7 @@ async function scrapeRecipeWebsite({
     }
     // END: ERROR HANDLING
 
-    const instance = Nightmare({
+    if (!instance) instance = Nightmare({
         openDevTools: devTools,
         show,
         waitTimeout: 5000,
@@ -92,25 +88,34 @@ async function scrapeRecipeWebsite({
 
                 let currentUrl = url;
 
+                let currentScrollPosition = 0
 
-                //     let originalHeight = 0
-                //     let currentHeight = 0
+                await instance.goto(currentUrl)
+
+                let currentHeight = await instance.evaluate(() => document.body.scrollHeight)
+
                 while (parsedRecipeLinks.length <= remaining) {
 
-                    await instance.goto(currentUrl)
-
                     // START: Handle Infinite Scrolling
-                    //     .evaluate(() => document.body.scrollHeight)
-                    // if (!originalHeight) {
-                    //     originalHeight = await instance.goto(currentUrl)
-                    // }
 
-                    // if (currentHeight < originalHeight) await handleScrollThrough(instance, currentHeight)
+                    // If the current scroll position is less than the document's current height...
+                    if (currentScrollPosition < currentHeight) {
+                        // Scroll to the bottom of the document starting at the current scroll position
+                        await handleScrollThrough(instance, currentScrollPosition)
 
-                    // currentHeight = originalHeight
+                        // Update the current scroll position
+                        currentScrollPosition = currentHeight
+
+                        // Wait and re-evaluate the document's current height
+                        currentHeight = await instance
+                            .wait(2000)
+                            .evaluate(() => document.body.scrollHeight)
+
+                    }
+                    else await instance.goto(currentUrl)
+
                     // END: Handle Infinite Scrolling
 
-                    let uniqueRecipes = []
                     try {
                         const { data, next } = await instance
                             .evaluate(async (remaining, recipeLinkSelector, seeMoreRecipesSelector) => {
@@ -171,10 +176,7 @@ async function scrapeRecipeWebsite({
 
                             }, remaining, recipeLinkSelector, seeMoreRecipesSelector)
 
-
-                        uniqueRecipes.push(...data.filter(r => !parsedRecipeLinks.includes(r)))
-
-                        parsedRecipeLinks.push(...uniqueRecipes)
+                        parsedRecipeLinks.push(...data.filter(r => !parsedRecipeLinks.includes(r)))
 
                         if (next) currentUrl = next
                         else break;
@@ -270,7 +272,7 @@ async function parseRecipe(instance) {
         .evaluate(
             () => {
                 /* 
-                    FUNCTIONS START
+                    START: FUNCTIONS
                 */
                 const parseNumber = s => !isNaN(s) ? parseFloat(s) : ([n, d] = s.split(/\D/), d) ? (n || 1) / d : '131111121234151357'[i = s.charCodeAt() % 63 % 20] / -~'133689224444557777'[i]
 
@@ -287,7 +289,7 @@ async function parseRecipe(instance) {
                 })
 
                 /*
-                    FUNCTIONS END
+                    END: FUNCTIONS
                 */
 
                 const recipeName = capitalizeWords(combineBlock((
@@ -313,8 +315,93 @@ async function parseRecipe(instance) {
                     `) || {}
                 ).innerText))
 
+
+                /*
+                    START: Parse Ingredients
+                */
+                const recipeIngredientsContainers = document.querySelectorAll(`
+                    div[class*="ingredient"],
+                    div[id*="ingredient"],
+                    div[class*="Ingredient"],
+                    div[id*="Ingredient"],
+                    ul[class*="ingredient"],
+                    ul[class*="Ingredient"],
+                    ul[id*="ingredient"],
+                    ul[id*="Ingredient"]
+                `)
+
+                const recipeIngredients = []
+
+                Object.values(recipeIngredientsContainers).map(ric => {
+
+                    recipeIngredients.push(
+                        ...Object.values(
+                            ric.querySelectorAll(`
+                                li,
+                                li[class*="ingredient"],
+                                li[itemprop*="ingredient"]
+                            `) || {})
+                            .map(ri => {
+
+                                const original = combineBlock(normalizeStr(ri.innerText))
+
+                                return {
+                                    original
+                                }
+
+                            })
+                    )
+                })
+
+                /*
+                    END: Parse Ingredients
+                */
+
+                /*
+                    START: Parse Instructions
+                */
+                const recipeInstructionsContainer = document.querySelector(`
+                    div[class*="instruction"],
+                    div[id*="instruction"],
+                    div[class*="Instruction"],
+                    div[id*="Instruction"],
+                    ol[class*="instruction"],
+                    ol[class*="Instruction"],
+                    ol[id*="instruction"],
+                    ol[id*="Instruction"],
+                    ul[class*="instruction"],
+                    ul[class*="Instruction"],
+                    ul[id*="instruction"],
+                    ul[id*="Instruction"]
+                `)
+
+                const recipeInstructions = Object.values(
+                    recipeInstructionsContainer ?
+                        recipeInstructionsContainer.querySelectorAll(`
+                        li,
+                        li[class*="instruction"],
+                        li[itemprop*="instruction"]
+                    `) || {} : {})
+                    .map((ri, idx) => {
+                        const description = combineBlock(ri.innerText, 2)
+
+                        const images = Object.values(
+                            ri.querySelectorAll('img') || {}
+                        ).map(i => extractImage(i))
+
+                        return {
+                            step: idx + 1,
+                            description,
+                            images
+                        }
+
+                    })
+                /*
+                    END: Parse Instructions
+                */
+
                 // If a recipe name not found, return
-                if (!recipeName.length) return null
+                if (!(recipeName.length && recipeInstructions.length && recipeIngredients.length)) return null
 
                 let recipeSummary = combineBlock((
                     document.querySelector(`
@@ -347,9 +434,8 @@ async function parseRecipe(instance) {
                 )
 
                 /*
-                    Parse Timing Start
+                    START: Parse Timing
                 */
-
                 let recipePrepTime = (
                     document.querySelector(`
                         [class*="prep_time"],
@@ -396,9 +482,12 @@ async function parseRecipe(instance) {
                 if (recipeTotalTime && recipeTotalTimeUnit) recipeTotalTime = [recipeTotalTime, recipeTotalTimeUnit].join(' ')
 
                 /*
-                    Parse Timing End
-                */
+                    END: Parse Timing
+               */
 
+                /*
+                    START: Parse Servings
+                */
                 const recipeServingsBlock = ((
                     document.querySelector(`
                         [class*="serving"],
@@ -425,6 +514,10 @@ async function parseRecipe(instance) {
                         .filter(f => f !== '')[0]
                 )
 
+                /*
+                    END: Parse Servings
+                */
+
                 const recipeImages = Object.values(
                     document.querySelectorAll(`
                         [class*="wp-image"]:not([class*='amzn']),
@@ -435,77 +528,6 @@ async function parseRecipe(instance) {
                     `) || {})
                     .filter(i => (extractImage(i).src || "").startsWith("http"))
                     .map(i => extractImage(i))
-
-                const recipeIngredientsContainers = document.querySelectorAll(`
-                    div[class*="ingredient"],
-                    div[id*="ingredient"],
-                    div[class*="Ingredient"],
-                    div[id*="Ingredient"],
-                    ul[class*="ingredient"],
-                    ul[class*="Ingredient"],
-                    ul[id*="ingredient"],
-                    ul[id*="Ingredient"]
-                `)
-
-                const recipeIngredients = []
-
-                Object.values(recipeIngredientsContainers).map(ric => {
-
-                    recipeIngredients.push(
-                        ...Object.values(
-                            ric.querySelectorAll(`
-                                li,
-                                li[class*="ingredient"],
-                                li[itemprop*="ingredient"]
-                            `) || {})
-                            .map(ri => {
-
-                                const original = combineBlock(normalizeStr(ri.innerText))
-
-                                return {
-                                    original
-                                }
-
-                            })
-                    )
-                })
-
-                const recipeInstructionsContainer = document.querySelector(`
-                    div[class*="instruction"],
-                    div[id*="instruction"],
-                    div[class*="Instruction"],
-                    div[id*="Instruction"],
-                    ol[class*="instruction"],
-                    ol[class*="Instruction"],
-                    ol[id*="instruction"],
-                    ol[id*="Instruction"],
-                    ul[class*="instruction"],
-                    ul[class*="Instruction"],
-                    ul[id*="instruction"],
-                    ul[id*="Instruction"]
-                `)
-
-                const recipeInstructions = Object.values(
-                    recipeInstructionsContainer ?
-                        recipeInstructionsContainer.querySelectorAll(`
-                        li,
-                        li[class*="instruction"],
-                        li[itemprop*="instruction"]
-                    `) || {} : {})
-                    .map((ri, idx) => {
-                        const description = combineBlock(ri.innerText, 2)
-
-                        const images = Object.values(
-                            ri.querySelectorAll('img') || {}
-                        ).map(i => extractImage(i))
-
-                        return {
-                            step: idx + 1,
-                            description,
-                            images
-                        }
-
-                    })
 
                 return {
                     link: document.URL,
@@ -611,71 +633,105 @@ const writeRecipes = (recipes, prefix) => {
     fs.writeFileSync(`${OUTPUT_PATH}/${prefix}.json`, JSON.stringify(recipes))
 }
 
-Promise.all([
-    // scrapeRecipeWebsite({
-    //     recipeLinkSelector: '.entry-content li a',
-    //     // seeMoreRecipesSelector: 'a.next',
-    //     url: 'https://nomnompaleo.com/recipeindex',
-    //     maxCount: 10,
-    //     multibar,
-    //     show: true,
-    //     devTools: true,
-    //     name: "Nom Nom Paleo"
-    // }).then(
-    //     ({ data, instance }) => {
-    //         writeRecipes(data, "nn_index")
 
-    //         return instance.end()
-    //     }
-    // ),
-    // scrapeRecipeWebsite({
-    //     recipeLinkSelector: 'a.more-link',
-    //     seeMoreRecipesSelector: 'li.pagination-next a',
-    //     url: 'http://www.happybellyfoodie.com/category/recipes/side-dishes/',
-    //     maxCount: 10,
-    //     multibar,
-    //     show: true,
-    //     devTools: true,
-    //     name: "Happy Belly Foodie"
-    // }).then(
-    //     ({ data, instance }) => {
-    //         writeRecipes(data, "hbf_index")
+async function runTest({
+    numRecipes = 5,
+    devMode = false,
+    numInstances = 1
+} = {}) {
 
-    //         return instance.end()
-    //     }
-    // ),
-    scrapeRecipeWebsite({
-        recipeLinkSelector: '.grid-card-image-container a',
-        // seeMoreRecipesSelector: 'a.next',
-        url: 'https://www.allrecipes.com/',
-        maxCount: `1`,
-        multibar,
-        show: true,
-        devTools: true,
-        name: "AllRecipes"
-    }).then(
-        ({ ok, error, data, instance }) => {
-            if (ok) writeRecipes(data, "ac_index")
-            else console.log(error)
+    const multibar = new cliProgress.MultiBar({
+        format: '{title} |' + '{bar}' + '| {percentage}% || {value}/{total} Recipes',
+        hideCursor: true
+    
+    }, cliProgress.Presets.shades_grey);    
 
-            // return instance.end()
+    const recipeWebsites = [
+        {
+            name: 'Nom Nom Paleo',
+            recipeLinkSelector: '.entry-content li a',
+            seeMoreRecipesSelector: 'a.next',
+            url: 'https://nomnompaleo.com/recipeindex',
+        },
+        {
+            recipeLinkSelector: 'a.more-link',
+            seeMoreRecipesSelector: 'li.pagination-next a',
+            url: 'http://www.happybellyfoodie.com/category/recipes/side-dishes/',
+            name: "Happy Belly Foodie",
+        },
+        {
+            recipeLinkSelector: '.grid-card-image-container a',
+            // seeMoreRecipesSelector: 'a.next',
+            url: 'https://www.allrecipes.com/',
+            name: "AllRecipes",
+        },
+        {
+            recipeLinkSelector: '.grid-post a',
+            seeMoreRecipesSelector: 'a.next',
+            url: 'https://adventuresincooking.com/recipe-index/',
+            name: "Adventures in Cooking",
+        },
+        {
+            recipeLinkSelector: 'a.recipe-link',
+            seeMoreRecipesSelector: 'a.load-more-btn',
+            url: 'https://norecipes.com/recipes/',
+            name: "No Recipes",
+        },
+        {
+            recipeLinkSelector: 'a.entry-image-link',
+            seeMoreRecipesSelector: 'li.pagination-next a',
+            categoryLinkSelector: '.more-from-category a',
+            url: 'https://www.chinasichuanfood.com/recipe-index/',
+            name: "China Sichuan Food",
         }
-    ),
+    ]
 
-    // scrapeRecipe({
-    //     url: 'https://minimalistbaker.com/raw-rainbow-peanut-noodle-salad/',
-    //     show: true,
-    //     devTools: true,
-    // }).then(
-    //     ({ data, instance }) => {
-    //         if (data) writeRecipes(data, data.name.split(' ').join('-'))
+    const promises = recipeWebsites.map(
+        info => instance => scrapeRecipeWebsite({
+            ...info,
+            maxCount: numRecipes,
+            multibar,
+            show: devMode,
+            devTools: devMode,
+            instance
+        }).then(
+            ({ ok, error, data }) => {
+                if (ok) return data.map(r => ({...r, source: info.name || 'Unknown'}))
+                else console.log(error)
 
-    //         return instance.end()
-    //     }
-    // )
+            }
+        ))
 
+    const instanceQueues = _.chunk(promises, Math.ceil(promises.length / numInstances))
 
-]).then(() => multibar.stop())
+    const allRecipes = []
 
-// WPURP
-// https://hispanickitchen.com/?s=
+    await Promise.all([
+        ...instanceQueues.map(async q => {
+            const instance = Nightmare({
+                openDevTools: devMode,
+                show: devMode,
+                waitTimeout: 5000,
+                // webPreferences: {
+                //     images: true,
+                //     webgl: false
+                // }
+            })
+
+            for (const p of q) allRecipes.push( ...((await p(instance)) || []))
+
+            return instance.end()
+        })
+    ])
+
+    writeRecipes(allRecipes, `scrape-test-artifact-${Date.now()}`)
+
+    multibar.stop()
+
+}
+
+runTest({
+    numRecipes: 5,
+    devMode: true,
+    numInstances: 2
+})
