@@ -4,11 +4,12 @@ const moment = require('moment')
 const parseDuration = require('parse-duration')
 const { parse: parseIngredient } = require('recipe-ingredient-parser-v2');
 
-
-
 const fs = require('fs')
 
+
 const OUTPUT_PATH = 'generated'
+
+const DEFAULT_TIMEOUT = 5000
 
 const multibar = new cliProgress.MultiBar({
     format: '{title} |' + '{bar}' + '| {percentage}% || {value}/{total} Recipes',
@@ -18,7 +19,7 @@ const multibar = new cliProgress.MultiBar({
 
 async function scrapeRecipeWebsite({
     maxCount = 1,
-    name = "Recipes",
+    name = 'Recipes',
     url,
     show = false,
     devTools = false,
@@ -27,9 +28,7 @@ async function scrapeRecipeWebsite({
     recipeLinkSelector,
     seeMoreRecipesSelector,
 } = {}) {
-    /*
-    ERROR HANDLING START
-    */
+    // START: ERROR HANDLING
     if (!url) throw new Error('NoWebsiteEntryPointException: To scrape recipes, please provide a starting URL for the website you want to scrape recipes from.')
 
     const recipeSelectorContainsAnchor =
@@ -47,150 +46,186 @@ async function scrapeRecipeWebsite({
 
         if (!categorySelectorContainsAnchor) throw new Error('NoCategoryLinkSelectorException: To scrape recipes, please provide a CSS selector to identify links (anchor tags) to recipe category pages.')
     }
-
-    /*
-    ERROR HANDLING END
-    */
+    // END: ERROR HANDLING
 
     const instance = Nightmare({
         openDevTools: devTools,
         show,
-        webPreferences: {
-            images: false,
-            webgl: false
-        }
+        waitTimeout: 5000,
+        // webPreferences: {
+        //     images: true,
+        //     webgl: false
+        // }
     })
 
-    // SCRAPE STARTING URL FOR RECIPE CATEGORY PAGES
-    const recipeListPages = []
+    try {
 
-    if (categoryLinkSelector) {
-        const categoryPages = await instance
-            .goto(url)
-            .evaluate((categoryLinkSelector) => {
-                const matches = document.querySelectorAll(categoryLinkSelector)
+        // START: SCRAPE STARTING URL FOR RECIPE CATEGORY PAGES
+        const recipeListPages = []
 
-                const categoryLinks = Object.keys(matches).map(k => matches[k].href)
+        if (categoryLinkSelector) {
+            const categoryPages = await instance
+                .goto(url)
+                .evaluate((categoryLinkSelector) => {
+                    const matches = document.querySelectorAll(categoryLinkSelector)
 
-                return categoryLinks
-            }, categoryLinkSelector)
+                    const categoryLinks = Object.keys(matches).map(k => matches[k].href)
 
-        recipeListPages.push(...categoryPages)
-    } else recipeListPages.push(url)
+                    return categoryLinks
+                }, categoryLinkSelector)
 
-    // SCRAPE RECIPE LINKS FROM SCRAPED RECIPE CATEGORY PAGES
-    const allRecipeLinks = await recipeListPages
-        .reduce(async (accumulator, url) => {
+            recipeListPages.push(...categoryPages)
+        } else recipeListPages.push(url)
+        // END: SCRAPE STARTING URL FOR RECIPE CATEGORY PAGES
 
-            const prevRecipeLinks = await accumulator;
+        // START: SCRAPE RECIPE LINKS FROM SCRAPED RECIPE CATEGORY PAGES
+        const allRecipeLinks = await recipeListPages
+            .reduce(async (accumulator, url) => {
 
-            if (prevRecipeLinks.length >= maxCount) return prevRecipeLinks
+                const prevRecipeLinks = await accumulator;
 
-            const remaining = maxCount - prevRecipeLinks.length
+                if (prevRecipeLinks.length >= maxCount) return prevRecipeLinks
 
-            const parsedRecipeLinks = []
+                const remaining = maxCount - prevRecipeLinks.length
 
-            let currentUrl = url;
+                const parsedRecipeLinks = []
 
-            while (parsedRecipeLinks.length <= remaining) {
+                let currentUrl = url;
 
-                const { data, next } = await instance.goto(currentUrl)
-                    .evaluate(async (remaining, recipeLinkSelector, seeMoreRecipesSelector) => {
 
-                        const findRecipeLinks = () => {
+                //     let originalHeight = 0
+                //     let currentHeight = 0
+                while (parsedRecipeLinks.length <= remaining) {
 
-                            const matches = document.querySelectorAll(recipeLinkSelector)
+                    await instance.goto(currentUrl)
 
-                            return Object.keys(matches)
-                                .map(k => matches[k].href || '')
+                    // START: Handle Infinite Scrolling
+                    //     .evaluate(() => document.body.scrollHeight)
+                    // if (!originalHeight) {
+                    //     originalHeight = await instance.goto(currentUrl)
+                    // }
 
-                        }
+                    // if (currentHeight < originalHeight) await handleScrollThrough(instance, currentHeight)
 
-                        const recipePages = []
+                    // currentHeight = originalHeight
+                    // END: Handle Infinite Scrolling
 
-                        recipePages.push(
-                            ...findRecipeLinks()
-                        );
+                    let uniqueRecipes = []
+                    try {
+                        const { data, next } = await instance
+                            .evaluate(async (remaining, recipeLinkSelector, seeMoreRecipesSelector) => {
 
-                        while (seeMoreRecipesSelector && recipePages.length <= remaining) {
-                            const seeMoreButton = document.querySelector(seeMoreRecipesSelector)
+                                const findRecipeLinks = () => {
 
-                            if (seeMoreButton) {
-                                const nextPageLink = seeMoreButton.getAttribute('href')
+                                    const matches = document.querySelectorAll(recipeLinkSelector)
 
-                                // If the see more button does not travel to a new page, click to load more recipes
-                                if (
-                                    !nextPageLink ||
-                                    !nextPageLink.includes('http')
-                                ) seeMoreButton.click()
+                                    return Object.keys(matches)
+                                        .map(k => matches[k].href || '')
 
-                                // Otherwise, handle traveling to the new page
-                                else if (nextPageLink.includes('http')) {
-                                    return {
-                                        data: recipePages,
-                                        next: nextPageLink
-                                    }
                                 }
 
-                            }
+                                const recipePages = []
 
-                            else break
-
-                            recipePages.push(
-                                ...findRecipeLinks()
-                            );
-
-                        }
-
-                        return { data: recipePages, next: null }
-
-                    }, remaining, recipeLinkSelector, seeMoreRecipesSelector)
-
-                parsedRecipeLinks.push(...data)
-
-                if (next) currentUrl = next
-                else break;
+                                recipePages.push(
+                                    ...findRecipeLinks()
+                                );
 
 
-            }
+                                const seeMoreButton = document.querySelector(seeMoreRecipesSelector)
 
-            return prevRecipeLinks.concat(parsedRecipeLinks)
+                                while (seeMoreButton && recipePages.length <= remaining) {
 
-        }, Promise.resolve([]))
+                                    const nextPageLink = seeMoreButton.getAttribute('href')
 
-    // REDUCE NUMBER OF RECIPES TO PARSE
-    const recipesToParse = allRecipeLinks.slice(0, maxCount)
+                                    // If the see more button does not travel to a new page, click to load more recipes
+                                    if (
+                                        !nextPageLink ||
+                                        !nextPageLink.startsWith('http')
+                                    ) {
+                                        seeMoreButton.click()
 
-    let totalNumRecipes = recipesToParse.length
+                                        // Wait for resources to load (WIP)
+                                        await new Promise(resolve => setTimeout(resolve, 2000))
 
-    // SET UP PROGRESS BAR FOR CLI USERS
-    const progressBar = multibar ? multibar.create(totalNumRecipes, 0) : (new cliProgress.SingleBar({}, cliProgress.Presets.shades_classic));
+                                        const newRecipeLinks = findRecipeLinks().filter(f => !recipePages.includes(f))
 
-    progressBar.start(totalNumRecipes, 0)
+                                        if (!newRecipeLinks.length) break;
 
-    const allRecipeInfo = await recipesToParse
-        .reduce(async (accumulator, url) => {
+                                        recipePages.push(
+                                            ...newRecipeLinks
+                                        );
+                                    }
 
-            const prevRecipeInfo = await accumulator;
+                                    // Otherwise, handle traveling to the new page
+                                    else if (nextPageLink.startsWith('http')) {
+                                        return {
+                                            data: recipePages,
+                                            next: nextPageLink
+                                        }
+                                    }
 
-            await instance.goto(url)
 
-            const parsedRecipeInfo = await parseRecipe(instance)
+                                }
 
-            const updateObj = { title: name }
+                                return { data: recipePages, next: null }
 
-            if (!parsedRecipeInfo) progressBar.setTotal(--totalNumRecipes)
+                            }, remaining, recipeLinkSelector, seeMoreRecipesSelector)
 
-            progressBar.update(prevRecipeInfo.length + 1, updateObj);
 
-            return prevRecipeInfo.concat(parsedRecipeInfo ? [parsedRecipeInfo] : [])
+                        uniqueRecipes.push(...data.filter(r => !parsedRecipeLinks.includes(r)))
 
-        }, Promise.resolve([]))
+                        parsedRecipeLinks.push(...uniqueRecipes)
 
-    progressBar.stop()
+                        if (next) currentUrl = next
+                        else break;
+                    } catch (e) {
+                        if (!(e.message || '').toLowerCase().includes('timed out')) break
+                        continue
+                    }
 
-    return { data: allRecipeInfo, instance }
+                }
 
+                return prevRecipeLinks.concat(parsedRecipeLinks)
+            }, Promise.resolve([]))
+        // END: SCRAPE RECIPE LINKS FROM SCRAPED RECIPE CATEGORY PAGES
+
+        // REDUCE NUMBER OF RECIPES TO PARSE
+        const recipesToParse = allRecipeLinks.slice(0, maxCount)
+
+        let totalNumRecipes = recipesToParse.length
+
+        // SET UP PROGRESS BAR FOR CLI USERS
+        const progressBar = multibar ? multibar.create(totalNumRecipes, 0) : (new cliProgress.SingleBar({}, cliProgress.Presets.shades_classic));
+
+        progressBar.start(totalNumRecipes, 0, { title: name })
+
+        // START: PARSE ALL SCRAPED RECIPES
+        const allRecipeInfo = await recipesToParse
+            .reduce(async (accumulator, url) => {
+
+                const prevRecipeInfo = await accumulator;
+
+                await instance.goto(url)
+
+                const parsedRecipeInfo = await parseRecipe(instance)
+
+                const updateObj = { title: name }
+
+                if (!parsedRecipeInfo) {
+                    progressBar.setTotal(--totalNumRecipes)
+                } else progressBar.update(prevRecipeInfo.length + 1, updateObj);
+
+                return prevRecipeInfo.concat(parsedRecipeInfo ? [parsedRecipeInfo] : [])
+
+            }, Promise.resolve([]))
+        // END: PARSE ALL SCRAPED RECIPES
+
+        progressBar.stop()
+
+        return { ok: true, data: allRecipeInfo, instance }
+    } catch (e) {
+        return { ok: false, data: null, error: e.message, instance }
+    }
 }
 async function scrapeRecipe({
     url,
@@ -208,8 +243,9 @@ async function scrapeRecipe({
     const instance = Nightmare({
         openDevTools: devTools,
         show,
+        waitTimeout: DEFAULT_TIMEOUT,
         webPreferences: {
-            images: false,
+            images: true,
             webgl: false
         }
     })
@@ -224,6 +260,11 @@ async function scrapeRecipe({
 
 async function parseRecipe(instance) {
     await handleScrollThrough(instance)
+
+    // Wait for lazy images to finish loading
+    if (await instance.exists('[data-ll-status="loading"]')) {
+        await instance.wait('[data-ll-status="loaded"]')
+    }
 
     return instance
         .evaluate(
@@ -240,7 +281,7 @@ async function parseRecipe(instance) {
                 const capitalizeWords = (s = '') => s.trim().toLowerCase().split(' ').map(f => f.charAt(0).toUpperCase() + f.slice(1)).join(' ')
 
                 const extractImage = i => ({
-                    src: i.getAttribute("nitro-lazy-src") || i.getAttribute('src')
+                    src: i.getAttribute("nitro-lazy-src") || i.currentSrc || i.getAttribute('src')
                         || '',
                     alt: i.getAttribute('alt')
                 })
@@ -250,6 +291,12 @@ async function parseRecipe(instance) {
                 */
 
                 const recipeName = capitalizeWords(combineBlock((
+                    document.querySelector(`
+                        [class*='recipe-main'] h1,
+                        [class*='recipe-main'] h2,
+                        [id*='recipe-main'] h1,
+                        [id*='recipe-main'] h2
+                    `) ||
                     document.querySelector(`
                         [id*="post-title"], 
                         [id*="recipe-name"], 
@@ -352,7 +399,7 @@ async function parseRecipe(instance) {
                     Parse Timing End
                 */
 
-                const recipeServings = ((
+                const recipeServingsBlock = ((
                     document.querySelector(`
                         [class*="serving"],
                         [class*="yield"],
@@ -360,6 +407,17 @@ async function parseRecipe(instance) {
                         [itemprop*="Yield"]
                         `) || {}
                 ).innerText || '');
+
+                const recipeServingsInput = ((
+                    document.querySelector(`
+                        [class*="serving"] input,
+                        [class*="yield"] input,
+                        [itemprop*="yield"] input,
+                        [itemprop*="Yield"] input
+                        `) || {}
+                ).value || '');
+
+                const recipeServings = recipeServingsInput || recipeServingsBlock || ''
 
                 let recipeServingSize = parseInt(
                     recipeServings.split(' ')
@@ -369,17 +427,16 @@ async function parseRecipe(instance) {
 
                 const recipeImages = Object.values(
                     document.querySelectorAll(`
-                        [class*="wp-image"],
-                        a[rel="lightbox"] img,
-                        .entry-content img
+                        [class*="wp-image"]:not([class*='amzn']),
+                        a[rel="lightbox"] img:not([class*='amzn']),
+                        .entry-content img:not([class*='amzn']),
+                        div[class*='image'] img
+
                     `) || {})
-                    .filter(i => {
-                        return (extractImage(i).src || "").includes("http")
-                    }
-                    )
+                    .filter(i => (extractImage(i).src || "").startsWith("http"))
                     .map(i => extractImage(i))
 
-                const recipeIngredientsContainer = document.querySelector(`
+                const recipeIngredientsContainers = document.querySelectorAll(`
                     div[class*="ingredient"],
                     div[id*="ingredient"],
                     div[class*="Ingredient"],
@@ -390,22 +447,28 @@ async function parseRecipe(instance) {
                     ul[id*="Ingredient"]
                 `)
 
-                const recipeIngredients = Object.values(
-                    recipeIngredientsContainer ?
-                        recipeIngredientsContainer.querySelectorAll(`
-                        li,
-                        li[class*="ingredient"],
-                        li[itemprop*="ingredient"]
-                    `) || {} : {})
-                    .map(ri => {
+                const recipeIngredients = []
 
-                        const original = combineBlock(normalizeStr(ri.innerText))
+                Object.values(recipeIngredientsContainers).map(ric => {
 
-                        return {
-                            original
-                        }
+                    recipeIngredients.push(
+                        ...Object.values(
+                            ric.querySelectorAll(`
+                                li,
+                                li[class*="ingredient"],
+                                li[itemprop*="ingredient"]
+                            `) || {})
+                            .map(ri => {
 
-                    })
+                                const original = combineBlock(normalizeStr(ri.innerText))
+
+                                return {
+                                    original
+                                }
+
+                            })
+                    )
+                })
 
                 const recipeInstructionsContainer = document.querySelector(`
                     div[class*="instruction"],
@@ -469,7 +532,7 @@ async function parseRecipe(instance) {
                     images: recipeImages,
                     servings: {
                         original: recipeServings,
-                        transform: recipeServingSize
+                        value: recipeServingSize
                     }
                 }
             })
@@ -490,31 +553,7 @@ async function parseRecipe(instance) {
                 // Transform ingredients
                 ingredients: r.ingredients.map(i => {
 
-                    const iStr = i.original
-                        .replace('.', '') //Remove .
-                        .replace(/\([^)]*\)/g, '') //Remove ingredient explainations wrapped in ()
-                        .split(',')[0] // Remove ingredient explainations
-                        .split(' for ')[0] // Remove ingredient explainations
-                        .split(' ').map((f, idx) => {
-                            // Account for recipe ingredients that contain recipes that have two words with digits
-
-                            // For example, '36 2-inch wonton wrappers'
-
-                            // This case breaks the package 'recipe-ingredient-parser-v2'
-
-                            const charRemoved = f.replace(/[^\d.-]/g, '')
-
-                            if (idx !== 0 && charRemoved.length > 0 && !f.includes('/')) return `(${f})`
-
-                            return f
-
-                        }).join(' ')
-                        || ''
-
-                    const parsedIngredient = iStr ? parseIngredient(iStr) : {}
-
-
-                    const { quantity, unit, ingredient } = parsedIngredient
+                    const { quantity, unit, ingredient } = parseRecipeIngredient(i.original)
 
                     return {
                         ...i,
@@ -529,14 +568,37 @@ async function parseRecipe(instance) {
         })
 }
 
-async function handleScrollThrough(instance) {
-    let currentHeight = 0;
+function parseRecipeIngredient(ri) {
+    const iStr = ri
+        .replace('.', '') //Remove .
+        .replace(/\([^)]*\)/g, '') //Remove ingredient explainations wrapped in ()
+        .split(' for ')[0] // Remove ingredient explainations
+        .split(' ').map((f, idx) => {
+            // Account for recipe ingredients that contain recipes that have two words with digits
+
+            // For example, '36 2-inch wonton wrappers'
+
+            // This case breaks the package 'recipe-ingredient-parser-v2'
+
+            const charRemoved = f.replace(/[^\d.-]/g, '')
+
+            if (idx !== 0 && charRemoved.length > 0 && !f.includes('/')) return `(${f})`
+
+            return f
+
+        }).join(' ')
+
+    return iStr ? parseIngredient(iStr) : {}
+}
+
+async function handleScrollThrough(instance, startingHeight = 0) {
+    let currentHeight = startingHeight;
 
     const totalHeight = await instance.evaluate(function () {
         return document.body.scrollHeight;
     });
 
-    const waitStep = 100
+    const waitStep = 50
 
     while (totalHeight >= currentHeight) {
         currentHeight += totalHeight * 0.1;
@@ -551,33 +613,66 @@ const writeRecipes = (recipes, prefix) => {
 
 Promise.all([
     // scrapeRecipeWebsite({
-    //     recipeLinkSelector: '.archive-post a',
-    //     seeMoreRecipesSelector: 'a.next',
-    //     url: 'https://damndelicious.net/category/asian-inspired/',
-    //     maxCount: 100,
+    //     recipeLinkSelector: '.entry-content li a',
+    //     // seeMoreRecipesSelector: 'a.next',
+    //     url: 'https://nomnompaleo.com/recipeindex',
+    //     maxCount: 10,
     //     multibar,
     //     show: true,
     //     devTools: true,
-    //     name: "Damn Delicious"
+    //     name: "Nom Nom Paleo"
     // }).then(
     //     ({ data, instance }) => {
-    //         writeRecipes(data, "woks_index")
+    //         writeRecipes(data, "nn_index")
 
-    //         // return instance.end()
+    //         return instance.end()
     //     }
     // ),
+    // scrapeRecipeWebsite({
+    //     recipeLinkSelector: 'a.more-link',
+    //     seeMoreRecipesSelector: 'li.pagination-next a',
+    //     url: 'http://www.happybellyfoodie.com/category/recipes/side-dishes/',
+    //     maxCount: 10,
+    //     multibar,
+    //     show: true,
+    //     devTools: true,
+    //     name: "Happy Belly Foodie"
+    // }).then(
+    //     ({ data, instance }) => {
+    //         writeRecipes(data, "hbf_index")
 
-    scrapeRecipe({
-        url: 'https://www.justonecookbook.com/warabi-mochi/',
+    //         return instance.end()
+    //     }
+    // ),
+    scrapeRecipeWebsite({
+        recipeLinkSelector: '.grid-card-image-container a',
+        // seeMoreRecipesSelector: 'a.next',
+        url: 'https://www.allrecipes.com/',
+        maxCount: `1`,
+        multibar,
         show: true,
         devTools: true,
+        name: "AllRecipes"
     }).then(
-        ({ data, instance }) => {
-            if (data) writeRecipes(data, data.name.split(' ').join('-'))
+        ({ ok, error, data, instance }) => {
+            if (ok) writeRecipes(data, "ac_index")
+            else console.log(error)
 
-            return instance.end()
+            // return instance.end()
         }
-    )
+    ),
+
+    // scrapeRecipe({
+    //     url: 'https://minimalistbaker.com/raw-rainbow-peanut-noodle-salad/',
+    //     show: true,
+    //     devTools: true,
+    // }).then(
+    //     ({ data, instance }) => {
+    //         if (data) writeRecipes(data, data.name.split(' ').join('-'))
+
+    //         return instance.end()
+    //     }
+    // )
 
 
 ]).then(() => multibar.stop())
